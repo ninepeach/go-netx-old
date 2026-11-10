@@ -3,6 +3,7 @@ package stream
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net"
 	"testing"
 
@@ -154,5 +155,65 @@ func TestBuffersWriterPreferredPlainWriterFallsBack(t *testing.T) {
 	}
 	if plain.writes != 3 {
 		t.Fatalf("plain writer got %d writes, want one per buffer", plain.writes)
+	}
+}
+
+// shortWriter writes at most max bytes per call and reports no error, which
+// io.Writer forbids but some wrappers do.
+type shortWriter struct {
+	bytes.Buffer
+	max int
+}
+
+func (s *shortWriter) Write(p []byte) (int, error) {
+	return s.Buffer.Write(p[:min(len(p), s.max)])
+}
+
+// shortVecWriter is a BuffersWriter that stops after max bytes, no error.
+type shortVecWriter struct {
+	bytes.Buffer
+	max int
+}
+
+func (s *shortVecWriter) WriteBuffers(b *net.Buffers) (int64, error) {
+	var n int64
+	for _, p := range *b {
+		k, _ := s.Buffer.Write(p[:min(len(p), s.max-int(n))])
+		n += int64(k)
+	}
+	return n, nil
+}
+
+func (s *shortVecWriter) Write(p []byte) (int, error) { return s.Buffer.Write(p) }
+
+// Checks: STREAM-21
+func TestFlushShortWriteIsAnError(t *testing.T) {
+	budget := limit.NewBudget(1 << 20)
+	pool := buf.NewPool(budget)
+	cases := []struct {
+		name  string
+		dst   io.Writer
+		parts []string
+	}{
+		{"single Write", &shortWriter{max: 2}, []string{"abcd"}},
+		{"plain writer, several", &shortWriter{max: 2}, []string{"abcd", "efgh", "ijkl"}},
+		{"BuffersWriter", &shortVecWriter{max: 3}, []string{"ab", "cd", "ef"}},
+	}
+	for _, c := range cases {
+		w := NewWriter(c.dst)
+		for _, b := range bufs(pool, c.parts...) {
+			w.Add(b)
+		}
+		w.AddShared([]byte("!"))
+		n, err := w.Flush()
+		if !errors.Is(err, io.ErrShortWrite) {
+			t.Fatalf("%s: Flush = %d, %v; want io.ErrShortWrite", c.name, n, err)
+		}
+		if budget.Used() != 0 {
+			t.Fatalf("%s: short write kept %d bytes", c.name, budget.Used())
+		}
+		if k, size := w.Pending(); k != 0 || size != 0 {
+			t.Fatalf("%s: queue not cleared: %d,%d", c.name, k, size)
+		}
 	}
 }

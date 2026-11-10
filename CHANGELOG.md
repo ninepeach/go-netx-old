@@ -113,6 +113,14 @@
 - socket: `ReusePort` is supported on macOS (binds, does not balance load)
   and on FreeBSD via `SO_REUSEPORT_LB` (balanced).
 
+### Fixed
+
+- stream: `Writer.Flush` returns `io.ErrShortWrite` when the destination
+  reports fewer bytes than queued with a nil error (which `io.Writer`
+  forbids but some wrappers do). It used to return nil, so the caller
+  believed a truncated or, through the per-buffer fallback, garbled
+  stream had been sent.
+
 ### Migration
 
 - Remove the `Unsupported` field from `FastOpenOptions`. Nothing else is

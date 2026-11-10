@@ -360,6 +360,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | STREAM-18 | P0 | `AddShared` 与 `Add` 按调用顺序混排写出（writev 与逐个 Write 两种目标）；共享数据不被释放、不被改动；`Pending` 计入；Flush 后 Writer 不再引用任何已排队的切片；空切片忽略 | ✅ | `stream.AddSharedInterleavesWithoutReleasing` |  |
 | STREAM-19 | P1 | 写失败和 `Discard` 时只释放 `Add` 的缓冲，共享数据不受影响，Writer 之后照常可用 | ✅ | `stream.AddSharedOnFailureAndDiscard` |  |
 | STREAM-20 | P1 | 同一份 1MB 只读数据经 16 个连接并发发送，内容完整、无竞态、源数据不变；`AddShared` + `Flush` 零分配 | ✅ | `stream.SharedPayloadToManyConnections` | 游戏配置等广播场景 |
+| STREAM-21 | P0 | 目标少写且不报错（违反 io.Writer 契约的包装）时，`Flush` 返回 `io.ErrShortWrite`，缓冲区照常全部释放；覆盖单个 Write、逐个 Write、`WriteBuffers` 三条路径 | ✅ | `stream.FlushShortWriteIsAnError` |  |
 
 ## 9. internal 与可观测性
 
@@ -451,6 +452,7 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | REG-27 | runtime | `OnError` 没有经过 `protect`，它 panic 时 LoopContext 直接 panic | RUN-18 | ✅ |
 | REG-28 | flow | 调用方先 `Flow.Close()`，flow 再离开表时 `OnClose` 不会调用，违反“每个离开表的 flow 恰好一次” | FLOW-17 | ✅ |
 | REG-29 | flow | `GetOrOpen` 的 newValue 或 `Range` 的 fn panic 后分片锁不释放，之后访问该分片永久阻塞 | FLOW-18、FLOW-19 | ✅ |
+| REG-30 | stream | 目标少写且返回 nil 时 `Flush` 返回 nil 并释放缓冲区，调用方以为已发完；逐个 Write 路径上每个缓冲区只写出前一段，接收方拿到拼接错乱的流（实测 "abcd"、"efgh"、"ijkl" 写成 "abefij"） | STREAM-21 | ✅ |
 
 ### 设计决定
 
