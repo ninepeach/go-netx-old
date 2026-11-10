@@ -98,7 +98,10 @@ counted; a fatal error closes the Conn and is returned by `Serve`.
 **Sending.** `WriteTo` spreads writes over sockets by destination port;
 `Reply` uses the socket that received the packet. Payloads over
 `MaxDatagram` return `ErrTooLarge`. A nil packet or a foreign `Reader`
-index never panics.
+index never panics. macOS refuses a datagram larger than `SO_SNDBUF`, whose
+default is 9216 bytes (`net.inet.udp.maxdgram`), so on macOS `Listen` raises
+`SO_SNDBUF` to 64KB unless `Socket.SendBuffer` is set; otherwise anything
+over 9216 bytes failed there with EMSGSIZE while it worked on Linux (REG-32).
 
 ## 4. Concurrency and handler contract
 

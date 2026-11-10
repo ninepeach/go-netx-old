@@ -99,7 +99,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | SOCK-23 | P1 | 不足时（仅 Linux）用 FORCE 选项重试一次，FORCE 自身的错误被忽略，以重试后读回的值为准；足够时不重试；setsockopt、getsockopt 的错误原样返回 | ✅ | `socket.EnsureBufferTriesForceOnce` | 所有平台运行 |
 | SOCK-24 | P0 | Linux 真实内核：请求值不超过 rmem_max/wmem_max 时成功；超过时，有 CAP_NET_ADMIN 则拿到完整大小，没有则返回 `BufferSizeError`，Actual 等于上限 | ✅ | `socket.BufferCapOnLinux` | 运行时检测权限，分别断言两种结果；已用 root 和 `setpriv --bounding-set -net_admin` 各跑一次 |
 | SOCK-25 | P1 | `SetBuffers` 作用于已有连接时同样校验 | ✅ | `socket.BufferCapOnLinux` | 仅 Linux |
-| SOCK-26 | P1 | macOS：内核开启服务端 Fast Open（`net.inet.tcp.fastopen` 含 2）时监听 socket 上 `TCP_FASTOPEN` 生效；关闭时监听照常工作 | ⚠️ | `socket.FastOpenOnDarwin` | 测试已写好，只在 macOS 上运行；当前开发环境只做了编译验证 |
+| SOCK-26 | P1 | macOS：内核开启服务端 Fast Open（`net.inet.tcp.fastopen` 含 2）时，`socket.Listen` 在 listen 之后设置 `TCP_FASTOPEN` 并生效；只用 `ListenConfig` 时不带 Fast Open 监听、不报错；内核关闭时监听照常工作 | ⚠️ | `socket.FastOpenOnDarwin` | 只在 macOS 上运行，由 CI 实际运行，CI 首次通过后改为 ✅ |
 | SOCK-27 | P1 | `socket.Supported()` 如实报告当前平台实现了哪些性能选项（Linux、macOS、FreeBSD、其他） | ✅ | `socket.SupportedMatchesPlatform` | 所有平台运行 |
 | SOCK-28 | P0 | `socket.Dialer` 设置了 FastOpen 时拨号报 `UnsupportedOptionError`：拨出方向的 FastOpen 会让已关闭的对端看起来连接成功（D-19） | ✅ | `socket.DialerRefusesFastOpen` |  |
 | SOCK-29 | P0 | `socket.Dialer` 保留调用方的 `Control` 和 `ControlContext`，先执行调用方的，再应用 go-netx 的选项；base 设置了 `ControlContext` 时选项照样生效 | ✅ | `socket.DialerKeepsCallerControl` |  |
@@ -195,7 +195,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | UDP-16 | P0 | `WriteTo` 发送内容正确 | ✅ | `udp.ReplyValidatesPacket` | 经由 Reply 的回退路径 |
 | UDP-17 | P0 | `Reply` 回包内容正确 | ✅ | `udp.Echo` |  |
 | UDP-18 | P0 | 超过 `MaxDatagram` 时返回 `ErrTooLarge`；较小的 `MaxPacket` 不限制发送 | ✅ | `udp.WriteTooLarge` |  |
-| UDP-19 | P1 | IPv4 下 65000 字节能发出（低于 IPv4 理论上限 65507） | ✅ | `udp.DefaultMaxDatagram`<br>`udp.IPv4MaxDatagramRoundTrip` |  |
+| UDP-19 | P1 | IPv4 下 65000 字节能发出（低于 IPv4 理论上限 65507）；macOS 上同样能发出（默认发送缓冲区 9216 字节，Listen 会调高） | ✅ | `udp.DefaultMaxDatagram`<br>`udp.IPv4MaxDatagramRoundTrip` | macOS 部分由 CI 运行 |
 | UDP-20 | P1 | IPv6 下的发送边界 | ⚠️ | `udp.IPv6MaxDatagramRoundTrip` | 开发环境没有 IPv6 会跳过；由 CI（`NETX_REQUIRE_IPV6=1`）实际运行，CI 首次通过后改为 ✅ |
 | UDP-21 | P1 | `Reply(nil)` 返回 `ErrNilPacket` | ✅ | `udp.ReplyValidatesPacket` |  |
 | UDP-22 | P1 | Reader 为负数或越界时回退到按端口选 socket，不 panic | ✅ | `udp.ReplyValidatesPacket` |  |
@@ -455,6 +455,8 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | REG-28 | flow | 调用方先 `Flow.Close()`，flow 再离开表时 `OnClose` 不会调用，违反“每个离开表的 flow 恰好一次” | FLOW-17 | ✅ |
 | REG-29 | flow | `GetOrOpen` 的 newValue 或 `Range` 的 fn panic 后分片锁不释放，之后访问该分片永久阻塞 | FLOW-18、FLOW-19 | ✅ |
 | REG-30 | stream | 目标少写且返回 nil 时 `Flush` 返回 nil 并释放缓冲区，调用方以为已发完；逐个 Write 路径上每个缓冲区只写出前一段，接收方拿到拼接错乱的流（实测 "abcd"、"efgh"、"ijkl" 写成 "abefij"） | STREAM-21 | ✅ |
+| REG-31 | socket | macOS 在 listen 之前设置 `TCP_FASTOPEN` 返回 EINVAL，开启 FastOpen 的 Listen 直接失败（CI 在 macOS 26 上实测；PR #15 起一直存在，此前没有 macOS 实机运行） | SOCK-06、SOCK-26 | ✅ |
+| REG-32 | udp | macOS 默认 `SO_SNDBUF` 为 9216 字节，超过它的数据报 `WriteTo` 返回 EMSGSIZE，`MaxDatagram` 的约定在 Mac 上不成立（CI 实测） | UDP-19、UDP-20 | ✅ |
 
 ### 设计决定
 

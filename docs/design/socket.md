@@ -23,6 +23,7 @@ type Options struct {
 }
 type FastOpenOptions struct { Enabled bool; Backlog int }
 func ListenConfig(Options) net.ListenConfig
+func Listen(ctx, network, address string, Options) (net.Listener, error) // + post-listen options
 func Dialer(base net.Dialer, Options) net.Dialer // returns a copy
 func SetBuffers(BufferSetter, Options) error     // for sockets made elsewhere
 func IsUnsupported(error) bool                   // *UnsupportedOptionError
@@ -32,8 +33,12 @@ type BufferSizeError struct{ Option string; Requested, Actual int }
 
 ## 3. Design
 
-**Everything before bind.** Options are applied in the `Control` hook of
-`net.ListenConfig` / `net.Dialer`, before the socket binds or connects.
+**Everything before bind, with one exception.** Options are applied in the
+`Control` hook of `net.ListenConfig` / `net.Dialer`, before the socket
+binds or connects. The exception is Fast Open on macOS, which the kernel
+refuses with EINVAL until the socket is listening (measured on macOS 26,
+REG-31); `Listen` sets it right after listen(2), so a listener made from
+`ListenConfig` alone runs without it. `tcp.Listen` uses `Listen`.
 That is what makes them work: a TCP listener's buffer sizes and keep-alive
 are inherited by accepted connections (no per-connection syscalls), and
 TCP window scaling is negotiated with the larger buffer already in place.
@@ -80,7 +85,7 @@ on non-TCP/UDP networks, TCP-only options on UDP (D-14), and ReusePort
 where a second bind would fail. There is no caller-chosen ignore policy
 (D-13). Where the platform can do it, the option is implemented rather
 than skipped: macOS listeners get Fast Open through `TCP_FASTOPEN`
-(0x105).
+(0x105), set after listen.
 
 **No Fast Open on dialers (D-19, REG-19).** Measured on Linux: after a TFO
 cookie is cached, a Fast Open dial to a port that is no longer listening

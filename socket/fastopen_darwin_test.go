@@ -12,12 +12,20 @@ import (
 // Checks: SOCK-26
 func TestFastOpenOnDarwin(t *testing.T) {
 	opts := socket.Options{FastOpen: socket.FastOpenOptions{Enabled: true}}
-	lc := socket.ListenConfig(opts)
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	ln, err := socket.Listen(context.Background(), "tcp", "127.0.0.1:0", opts)
 	if err != nil {
 		t.Fatal(err) // never an error: without kernel support it runs without
 	}
 	defer ln.Close()
+
+	// ListenConfig alone cannot set it (macOS needs a listening socket),
+	// but must not fail either.
+	lc := socket.ListenConfig(opts)
+	if l2, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0"); err != nil {
+		t.Fatal("ListenConfig with Fast Open:", err)
+	} else {
+		l2.Close()
+	}
 
 	// net.inet.tcp.fastopen: bit 1 client, bit 2 server.
 	mode, serr := syscall.SysctlUint32("net.inet.tcp.fastopen")

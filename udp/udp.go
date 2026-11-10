@@ -228,6 +228,10 @@ func Listen(ctx context.Context, network, address string, h Handler, o Options) 
 		}
 		uc := pc.(*net.UDPConn)
 		c.socks = append(c.socks, uc)
+		if err := raiseSendBuffer(uc, o.Socket.SendBuffer); err != nil {
+			c.closeSockets()
+			return nil, err
+		}
 		if i == 0 {
 			// Bind the remaining sockets to the resolved port so ":0" works.
 			c.local = uc.LocalAddr().(*net.UDPAddr).AddrPort()

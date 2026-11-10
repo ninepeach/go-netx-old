@@ -143,10 +143,28 @@ func IsUnsupported(err error) bool {
 }
 
 // ListenConfig returns a net.ListenConfig configured with the requested
-// pre-bind socket options.
+// pre-bind socket options. For TCP prefer Listen: on macOS Fast Open can
+// only be enabled on a socket that is already listening, so a listener
+// made from ListenConfig alone runs without it.
 func ListenConfig(opts Options) net.ListenConfig {
 	keepAlive, keepAliveConfig := opts.KeepAlive.apply()
 	return net.ListenConfig{Control: control(opts, false), KeepAlive: keepAlive, KeepAliveConfig: keepAliveConfig}
+}
+
+// Listen creates a TCP listener with opts: ListenConfig(opts).Listen, then
+// the options a platform accepts only on a listening socket (TCP Fast Open
+// on macOS). tcp.Listen uses it.
+func Listen(ctx context.Context, network, address string, opts Options) (net.Listener, error) {
+	lc := ListenConfig(opts)
+	ln, err := lc.Listen(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+	if err := afterListen(ln, opts); err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+	return ln, nil
 }
 
 // Dialer applies outbound socket options to base. The returned value is a
