@@ -169,3 +169,50 @@ func TestMaxFlowsConcurrent(t *testing.T) {
 	}()
 	NewTable[int, int](TableOptions[int, int]{MaxFlows: -1})
 }
+
+// TestCloseCanReturnWhileConcurrentOnCloseRuns documents the deliberately
+// non-joining Close contract. Stop concurrent operations before Close if
+// callback completion is required.
+func TestCloseCanReturnWhileConcurrentOnCloseRuns(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	removed := make(chan struct{})
+	tb := NewTable[int, int](TableOptions[int, int]{
+		OnClose: func(int, *Flow[int]) {
+			close(entered)
+			<-release
+		},
+	})
+	f, created := tb.GetOrOpen(1, nil)
+	if !created {
+		t.Fatal("flow not created")
+	}
+	go func() {
+		defer close(removed)
+		tb.Remove(1, f.ID())
+	}()
+	<-entered // flow removed; callback still pending
+	tb.Close()
+	if !tb.Closed() || tb.Len() != 0 {
+		t.Fatal("Close failed to close table")
+	}
+	close(release)
+	<-removed
+}
+
+// TestCloseBlocksNewFlowsAfterReturning ensures a concurrent writer cannot
+// recreate a flow after Close has returned.
+func TestCloseBlocksNewFlowsAfterReturning(t *testing.T) {
+	tb := NewTable[int, int](TableOptions[int, int]{MaxFlows: 1})
+	tb.GetOrOpen(1, nil)
+	tb.Close()
+	for i := 0; i < 100; i++ {
+		f, created := tb.GetOrOpen(i, nil)
+		if f != nil || created {
+			t.Fatalf("flow %d created after Close", i)
+		}
+	}
+	if tb.Len() != 0 {
+		t.Fatal("flows survived Close")
+	}
+}
