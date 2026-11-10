@@ -85,8 +85,8 @@ a deadline (§2.3).
 | `queue` Push + Pop | 33ns | 0 |
 | `internal/counter` Inc | 24ns | 0 |
 | `stream.Writer` backlog of 8 / 32 over TCP, vs one Write each | 5.8× / 11× faster | 0 |
-| `udp` receive, 64B, Batch 1 / 8 / 32 | 976 / 739 / 652ns | 0 |
-| `udp` receive, 1200B, Batch 1 / 8 / 32 | 1322 / 912 / 1001ns | 0 |
+| `udp` receive per queued datagram, 64B, Batch 1 / 8 / 32 (`BenchmarkRecv`, median of 8, 1s) | 720 / 439 / 439ns | 0 |
+| `udp` receive per queued datagram, 1200B, Batch 1 / 8 / 32 (same) | 794 / 558 / 594ns | 0 |
 | `udp` echo round trip, 512B | 4.6µs | 0 |
 | `tcp` accept + close | 27µs | 23 |
 
@@ -144,7 +144,10 @@ In §1.1 this took 9000 such connections from 22.3KB to 5.8KB each.
 ### 2.5 UDP
 
 - On Linux, `udp.Options.Batch` (default 8) cuts the receive cost per
-  datagram by 24–31% under load (§1.4). Memory per reader is
+  queued datagram by 30–39% in §1.4 (44% in the original D-17
+  measurement; the same benchmark varies that much between runs). It
+  helps only when datagrams queue up: with one in flight, as in an echo,
+  it changes nothing. Memory per reader is
   Batch × MaxPacket. For small-packet gateways, set `MaxPacket`.
 - `Socket.RecvBuffer` is verified (D-16). On Linux, raise
   `net.core.rmem_max` or grant CAP_NET_ADMIN, or `Listen` fails.

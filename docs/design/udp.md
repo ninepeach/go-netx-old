@@ -111,6 +111,12 @@ handler that never returns keeps `Serve` from returning. There is no
 context by design (D-03). Waiting work belongs on a gateway goroutine fed
 through a bounded queue. Panics are not recovered.
 
+`Serve` once per Conn (second call errors; after Close: `ErrClosed`). A
+`Shutdown` that runs before `Serve` was ever called is a requested stop:
+that first `Serve` returns nil without reading, so a stop that arrives
+during startup is a clean exit for `netx.Server` (REG-34). `Close` before
+`Serve` still yields `ErrClosed`, as does every later call.
+
 ## 5. Observability
 
 `Stats()`: RecvPackets/Bytes, SendPackets/Bytes, Truncated, RecvErrors,
@@ -127,11 +133,17 @@ Receive cost per datagram with a queue to drain (`BenchmarkRecv`: the
 handler holds the reader while 256 datagrams queue, then the reader drains
 them; median of 5 runs, 0 allocations in every case):
 
-| Batch | 64B | 1200B |
-|---|---|---|
-| 1 (v1.1 behaviour) | 2176 ns | 2373 ns |
-| 8 (Linux default) | 1210 ns | 1302 ns |
-| 32 | 1156 ns | 1233 ns |
+| Batch | 64B | 1200B | 64B, 2026-11-10 | 1200B, 2026-11-10 |
+|---|---|---|---|---|
+| 1 (v1.1 behaviour) | 2176 ns | 2373 ns | 720 ns | 794 ns |
+| 8 (Linux default) | 1210 ns (−44%) | 1302 ns (−45%) | 439 ns (−39%) | 558 ns (−30%) |
+| 32 | 1156 ns | 1233 ns | 439 ns | 594 ns |
+
+The first two columns are the measurement behind D-17; the last two are
+the same benchmark re-run on 2026-11-10 (median of 8, `-benchtime 1s`).
+The absolute cost varies a lot between runs and VM states, and so does
+the saving: 30–45% for Batch 8. Both are this queue-drain benchmark; no
+end-to-end figure is claimed for batching.
 
 Batching saves more than the bare system call (measured −34% for
 recvmmsg vs recvmsg in C-like Go code) because the Go poller and

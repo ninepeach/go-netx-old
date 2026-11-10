@@ -131,6 +131,13 @@
 
 ### Fixed
 
+- tcp, udp: a `Shutdown` that runs before `Serve` was first called makes
+  that `Serve` return nil instead of `ErrClosed`. A stop arriving during
+  startup (a SIGTERM while `OnStart` runs) used to make `netx.Server`
+  report `tcp: closed` / `udp: closed` through `OnError` and return it,
+  turning a clean stop into a failure. `Close` before `Serve`, and any
+  later `Serve`, still return `ErrClosed`.
+
 - stream: `Writer.Flush` returns `io.ErrShortWrite` when the destination
   reports fewer bytes than queued with a nil error (which `io.Writer`
   forbids but some wrappers do). It used to return nil, so the caller
