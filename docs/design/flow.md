@@ -119,8 +119,8 @@ shard is emptied (and is closed with it) or sees the mark and creates
 nothing. That makes "after Run returns the table is empty and every flow
 got its OnClose" hold even while UDP readers are still running (REG-33).
 
-**MaxFlows (D-23).** An optional cap against spoofed-source floods. The
-count is one atomic, touched only when a flow is created or leaves; a full
+**Close completion.** Closed reports that shutdown has started, not that all callbacks have finished. A Close call removes every flow it encounters, but concurrent Remove/Sweep/Close operations may still be running OnClose after that call returns. Callers that require callback completion must stop and join those operations before invoking Close. OnClose must not be used as an implicit global shutdown barrier.\n\n**MaxFlows (D-23).** An optional cap against spoofed-source floods. The
+count is one atomic, touched only when a flow is created or leaves; removal releases its slot while holding the owning shard lock, so capacity is not stale after a shard unlock; a full
 table refuses new keys (`Refused` counts them) and keeps serving existing
 flows. There is no eviction of old flows to make room: that would let a
 flood push out real sessions.
