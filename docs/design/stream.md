@@ -138,3 +138,7 @@ STREAM-01…STREAM-20, NF-20 (fuzz) in [docs/TESTING.md](../TESTING.md).
 ## 9. Open items
 
 None.
+
+## Cross-repository target-design alignment (2026-11-10)
+
+The [canonical target design](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/design.md) and [phased implementation plan](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/implementation-steps.zh.md) describe additional planned abstractions and acceptance criteria. This document specifies the **current module contract**. Current stream Reader/Writer handles byte-stream buffering and writes, not FrameCodec, logical Flow lifecycle, or the canonical plan's per-Flow writer queue. Do not treat target APIs as implemented or change this module's boundaries without an explicit cross-repository design decision.
