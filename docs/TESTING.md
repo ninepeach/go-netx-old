@@ -153,7 +153,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | DIAL-01 | P0 | 正常连接 | ✅ | `tcp.Dialer` |  |
 | DIAL-02 | P0 | 连接失败时返回错误，并触发 `OnDial` | ✅ | `tcp.DialEventFailure` |  |
 | DIAL-03 | P0 | ctx 取消后拨号及时结束 | ✅ | `tcp.DialContextCancelled` |  |
-| DIAL-04 | P0 | 超时设置生效 | ✅ | `tcp.DialTimeout` |  |
+| DIAL-04 | P0 | 超时设置生效 | ✅ | `tcp.DialTimeout` | Windows 上回环连接可能在 1ns 超时被察觉前完成（CI 实测），此时跳过；由 Linux 和 macOS 覆盖 |
 | DIAL-05 | P1 | 成功时 `DialEvent` 带有本地和远端地址 | ✅ | `tcp.DialEventSuccess` |  |
 | DIAL-06 | P1 | socket 选项作用于拨出的连接 | ✅ | `tcp.DialerAppliesSocketOptions` | 仅 Linux |
 | DIAL-07 | P1 | 回调出错时的处理 | ➖ |  | `OnDial` 没有返回值，只做观测 |
@@ -168,7 +168,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | UDP-01 | P0 | Listen 后能正常收发 | ✅ | `udp.Echo` |  |
 | UDP-02 | P0 | 开启 ReusePort 且 Readers 大于 1 时，包会分散到不同读循环 | ✅ | `udp.ReusePortReaders` | 仅 Linux |
 | UDP-03 | P0 | 收到的数据和来源地址正确，IPv4 映射地址已还原；同一双栈 socket 上的 IPv6 发送方报告为 IPv6，回复可达 | ✅ | `udp.FromAddressIsSenderAndUnmapped` | 无 IPv6 回环时跳过（否则 Go 会把 `[::]` 静默开成 IPv4 socket，测试形同虚设）；CI 设置 `NETX_REQUIRE_IPV6=1` |
-| UDP-04 | P0 | 零长度数据报能正常交给 handler | ✅ | `udp.ZeroLengthDatagram` |  |
+| UDP-04 | P0 | 零长度数据报能正常交给 handler | ✅ | `udp.ZeroLengthDatagram` | 客户端用未连接的 socket 和 WriteTo 发送：Windows 上 Go 的已连接 `Write(nil)` 不发出任何数据（CI 实测），这是 Go 标准库客户端的行为，go-netx 收发零长度数据报在 Windows 上正常 |
 | UDP-05 | P0 | 恰好 `MaxPacket` 字节的包能收到 | ✅ | `udp.DefaultMaxDatagram` |  |
 | UDP-06 | P1 | 超过 `MaxPacket` 的包被丢弃并计入 Truncated（Linux 靠 MSG_TRUNC 标志，Windows 靠 WSAEMSGSIZE 错误） | ✅ | `udp.DefaultMaxDatagram`<br>`udp.TruncatedDropped` |  |
 | UDP-07 | P1 | 多个读循环并发运行没有数据竞争 | ✅ | `udp.ConcurrentWritesAndClose`<br>`udp.ReusePortReaders` | 在 -race 下运行 |

@@ -340,14 +340,26 @@ func TestZeroLengthDatagram(t *testing.T) {
 		got <- len(p.Data)
 		_ = c.Reply(p, p.Data)
 	}, udp.Options{})
-	cl := dial(t, c)
-	if _, err := cl.Write(nil); err != nil {
+	// An unconnected client: on Windows Go's connected Write(nil) sends
+	// nothing (measured in CI), while WriteTo sends an empty datagram.
+	cl, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if n := <-got; n != 0 {
-		t.Fatalf("handler saw %d bytes", n)
+	defer cl.Close()
+	cl.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := cl.WriteToUDPAddrPort(nil, c.LocalAddr()); err != nil {
+		t.Fatal(err)
 	}
-	n, err := cl.Read(make([]byte, 8))
+	select {
+	case n := <-got:
+		if n != 0 {
+			t.Fatalf("handler saw %d bytes", n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("empty datagram not delivered")
+	}
+	n, _, err := cl.ReadFromUDPAddrPort(make([]byte, 8))
 	if err != nil || n != 0 {
 		t.Fatalf("empty reply: n=%d err=%v", n, err)
 	}

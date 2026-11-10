@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -121,6 +122,11 @@ func TestDialTimeout(t *testing.T) {
 	conn, err := d.DialContext(context.Background(), "tcp", ln.Addr().String())
 	if err == nil {
 		conn.Close()
+		if runtime.GOOS == "windows" {
+			// Measured in CI: a loopback connect on Windows can complete
+			// before the 1ns deadline is noticed. Linux and macOS cover it.
+			t.Skip("loopback connect finished before a 1ns deadline")
+		}
 		t.Fatal("dial beat a 1ns timeout")
 	}
 	var ne net.Error
