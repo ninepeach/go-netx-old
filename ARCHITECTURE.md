@@ -31,7 +31,7 @@ document is the overall design; each package has its own (see Module designs).
 | `flow/` | Flow | Flow ID (doubles as epoch), close state machine, idle-expiring `Table` | I/O, authentication, user identity |
 | `limit/` | Resource control | Admission (`Limiter`), totals (`Budget`) | Queues |
 | `queue/` | Resource control | Bounded `Ring`, overflow policy, backpressure | Global budgets |
-| `buf/` | Buffer management | `Pool`, power-of-two size classes (64B…64KB), ownership rules | Encoding, I/O |
+| `buf/` | Buffer management | `Pool`, power-of-two size classes (64B…128KB), ownership rules | Encoding, I/O |
 | `stream/` | Stream I/O | `Reader` that grows and shrinks with pending data, `Writer` that sends a backlog with one writev | Framing, protocols |
 | `internal/` | — | Syscalls, padded counters | Anything public |
 

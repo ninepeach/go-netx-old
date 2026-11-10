@@ -77,8 +77,8 @@ a deadline (§2.3).
 
 | Benchmark | Time | Allocs |
 |---|---|---|
-| `buf` Get + Release, any class 64B–64KB | 6–10ns | 0 |
-| `buf` Get + Release, 70KB (over `Large`, not pooled) | 15.5µs | 2 |
+| `buf` Get + Release, any class 64B–128KB | 6–10ns | 0 |
+| `buf` Get + Release, 140KB (over `Large`, not pooled; 2026-11-11) | 24µs | 2 |
 | `flow` Get on `netip.AddrPort`, 1k / 100k / 1M flows | 66 / 124 / 228ns | 0 |
 | `flow` GetAndTouch / GetOrOpen (existing key) | 51 / 53ns | 0 |
 | `flow` Sweep, 10k / 100k / 1M flows | 0.12 / 2.7 / 77ms | 0 |

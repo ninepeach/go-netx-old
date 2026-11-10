@@ -179,7 +179,7 @@ func TestPoolCorrectAcrossGC(t *testing.T) {
 
 // Checks: BUF-12, NF-16
 func BenchmarkGetReleaseBySize(b *testing.B) {
-	for _, n := range []int{64, 200, 1200, 3000, 9000, 40000, 70000} {
+	for _, n := range []int{64, 200, 1200, 3000, 9000, 40000, 70000, 140000} {
 		b.Run(strconv.Itoa(n), func(b *testing.B) {
 			p := NewPool(nil)
 			b.ReportAllocs()
@@ -221,8 +221,8 @@ func TestPowerOfTwoClasses(t *testing.T) {
 			b.Release()
 		}
 	}
-	if len(seen) != 11 {
-		t.Fatalf("%d classes, want 11 (64B…64KB)", len(seen))
+	if len(seen) != 12 {
+		t.Fatalf("%d classes, want 12 (64B…128KB)", len(seen))
 	}
 }
 

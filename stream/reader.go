@@ -33,12 +33,17 @@ var (
 	ErrNegativeCount = errors.New("stream: negative count")
 )
 
+// defaultMax is ReaderOptions.Max when unset. It is fixed at 64KB rather
+// than following buf.Large, so raising the largest pooled class (to 128KB in
+// #35) does not silently double the frame size every Reader accepts.
+const defaultMax = 64 << 10
+
 // ReaderOptions configures a Reader.
 type ReaderOptions struct {
 	// IdleSize is the buffer kept while no data is pending. Default 512.
 	IdleSize int
 	// Max is the most data the Reader will buffer, typically the largest
-	// frame the protocol allows. Default buf.Large (64KB).
+	// frame the protocol allows. Default 64KB.
 	Max int
 }
 
@@ -65,7 +70,7 @@ func NewReader(src io.Reader, pool *buf.Pool, o ReaderOptions) *Reader {
 		o.IdleSize = 512
 	}
 	if o.Max == 0 {
-		o.Max = buf.Large
+		o.Max = defaultMax
 	}
 	if o.IdleSize < 0 || o.Max < o.IdleSize || pool == nil {
 		panic("stream: invalid ReaderOptions or nil pool")
