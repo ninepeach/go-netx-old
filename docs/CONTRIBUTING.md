@@ -114,6 +114,7 @@ TESTING.md 的“测试”一栏由工具根据代码中的 `Checks:` 声明自�
 ## 5. 代码改动
 
 - 包结构、依赖方向、所有权规则以 ARCHITECTURE.md 为准，那里列出的冻结规则同样适用。
+- **`ninepeach/go-netx` 是设计文档唯一的事实来源。** 总体设计在 ARCHITECTURE.md，每个包的设计在 `docs/design/<包名>.md`，测试与设计决定在 docs/TESTING.md。其他地方的副本（claude.ai Project、旧的设计归档等）只是镜像，不以其为准，也不在那里修改设计。
 - **设计文档必须和代码同步**：总体设计在 ARCHITECTURE.md，每个包的设计在 `docs/design/<包名>.md`（根包对应 runtime.md，internal 下的子包在 internal.md 中各占一节）。改动包的职责、API、内部机制或性能数字时，必须在同一个 PR 里更新对应的设计文档。新增包时同时新增设计文档，缺少设计文档会导致 `go test` 失败（DOC-02）。
 - 设计文档统一采用以下章节：职责与边界、API、核心设计、并发与生命周期、所有权与资源、可观测性、平台差异、实测性能、设计决定、测试对应的检查点、待办事项。不适用的章节可以省略。
 - 新增公开 API 时，同一个 PR 里必须在 TESTING.md 中为它新增检查点，并更新 CHANGELOG.md。

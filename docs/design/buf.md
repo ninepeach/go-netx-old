@@ -30,16 +30,13 @@ func Outstanding() int64                  // debug builds
 
 ## 3. Ownership rules
 
-1. **Borrowed**: data handed to a callback (`udp.Packet.Data`,
-   `stream.Reader.Peek`) is valid only until the callback returns or the
-   next call. Never release it; `Copy` it to keep it.
-2. **Owned**: a `*Buf` from `Get` or `Copy` has exactly one owner, who
-   releases it exactly once.
-3. **Transfer**: handing a `*Buf` on (`queue.Ring.Push`, `stream.Writer.Add`)
-   transfers ownership. If the transfer fails, the caller still owns it.
-4. **Shared**: immutable data many connections send (`stream.Writer.AddShared`)
-   is a plain `[]byte` outside the pool: never owned, never released, not
-   changed while queued.
+The four rules (borrowed, owned, transfer, shared) are defined for every
+package in [ARCHITECTURE.md](../../ARCHITECTURE.md), "Ownership rules". buf
+provides the types they are about: a `*Buf` from `Get` or `Copy` is owned;
+`Release` ends ownership; handing a `*Buf` on (`queue.Ring.Push`,
+`stream.Writer.Add`) transfers it, and a failed transfer leaves it with the
+caller; shared data (`stream.Writer.AddShared`) is a plain `[]byte` outside
+the pool.
 
 Discard paths are where leaks happen, which is why `queue` has `OnDrop` and
 `stream.Writer` releases on every Flush outcome.
