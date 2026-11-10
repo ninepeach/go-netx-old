@@ -153,3 +153,7 @@ run on an IPv6 host yet.
   one peer; see the QUIC research note.
 - PKTINFO, so `Reply` uses the local address the datagram was sent to on
   multi-homed hosts bound to a wildcard address.
+
+## Cross-repository target-design alignment (2026-11-10)
+
+The [canonical target design](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/design.md) and [phased implementation plan](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/implementation-steps.zh.md) describe additional planned abstractions and acceptance criteria. This document specifies the **current module contract**. Current UDP handler runs inline on reader goroutines. The canonical plan's EnqueuePacket/WorkerLoop is a different proposed dispatch model, not current behavior; neither model implies reliability or per-peer sessions. Do not treat target APIs as implemented or change this module's boundaries without an explicit cross-repository design decision.
