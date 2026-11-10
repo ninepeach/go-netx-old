@@ -21,7 +21,7 @@ import (
 	"github.com/ninepeach/go-netx/limit"
 )
 
-// Size classes are powers of two from MinSize to Large: 64B, 128B, …, 64KB.
+// Size classes are powers of two from MinSize to Large: 64B, 128B, …, 128KB.
 // A request takes the smallest class that holds it, so a buffer's capacity
 // is less than twice its length (except below MinSize), and the class is
 // one bit operation away. Small, Medium and Large name common sizes.
@@ -29,12 +29,12 @@ const (
 	MinSize = 64       // smallest class: one cache line
 	Small   = 2 << 10  // one MTU-sized datagram
 	Medium  = 16 << 10 // a typical stream read
-	Large   = 64 << 10 // largest class and largest UDP datagram
+	Large   = 128 << 10 // largest pooled class; UDP datagrams have a separate limit
 )
 
 const (
 	minShift   = 6 // log2(MinSize)
-	numClasses = 11
+	numClasses = 12
 )
 
 // Capacity returns the capacity a Get(n) buffer has, which is also what it

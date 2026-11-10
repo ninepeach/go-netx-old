@@ -6,7 +6,7 @@ Overall design: [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
 | Owns | Does not own |
 |---|---|
-| Pooled byte buffers in power-of-two size classes (64B…64KB) | I/O (see `stream`) |
+| Pooled byte buffers in power-of-two size classes (64B…128KB) | I/O (see `stream`) |
 | The ownership rules every go-netx package follows | Encoding |
 | Charging in-use memory to a `limit.Budget` | Process memory limits |
 | Debug-build ownership checks | |
@@ -43,7 +43,7 @@ Discard paths are where leaks happen, which is why `queue` has `OnDrop` and
 
 ## 4. Design
 
-**Power-of-two classes, 64B to 64KB (D-21).** Eleven classes, one
+**Power-of-two classes, 64B to 128KB (D-21).** Twelve classes, one
 `sync.Pool` each. A request takes the smallest class that holds it, found
 with one `bits.Len`, so capacity is under twice the length (from 64B up)
 and the budget, which charges capacity, holds at least half data. This is
@@ -53,7 +53,7 @@ earlier three classes (2KB, 16KB, 64KB) wasted up to 8×: a 3KB IM message
 held 16KB and a 50B game packet 2KB; now they hold 4KB and 64B. More
 classes cost nothing measurable: each class is its own per-P pool, and Get
 + Release stayed at about 9ns. 64B is the floor because smaller buffers
-save little next to the `Buf` header; 64KB is the largest UDP datagram.
+save little next to the `Buf` header; 128KB is the largest pooled buffer; UDP datagram limits are independent.
 Requests above `Large` are allocated directly and not pooled, but still
 budgeted. `Capacity(n)` exposes the rounding so callers can plan budgets
 and `stream.Reader` can grow class by class.
@@ -89,7 +89,7 @@ both.
 
 ## 6. Performance (2 vCPU)
 
-Get + Release about 9ns at every pooled size from 64B to 64KB, 0
+Get + Release about 9ns at every pooled size from 64B to 128KB, 0
 allocations, the same as the three-class version measured in the same
 run (`BenchmarkGetReleaseBySize`, medians of 6). Unpooled (70KB) about
 11µs and 2 allocations, unchanged.
