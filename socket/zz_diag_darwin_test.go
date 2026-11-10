@@ -30,4 +30,5 @@ func TestZZDiagFastOpenDarwin(t *testing.T) {
 	syscall.Bind(u, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}})
 	sa, _ := syscall.Getsockname(u)
 	t.Logf("sendto 65507 after raising SO_SNDBUF: %v", syscall.Sendto(u, make([]byte, 65507), 0, sa))
+	t.Error("diagnostics")
 }
