@@ -221,8 +221,8 @@ func TestPowerOfTwoClasses(t *testing.T) {
 			b.Release()
 		}
 	}
-	if len(seen) != 12 {
-		t.Fatalf("%d classes, want 12 (64B…128KB)", len(seen))
+	if len(seen) != 11 {
+		t.Fatalf("%d classes, want 11 (64B…64KB, D-26)", len(seen))
 	}
 }
 

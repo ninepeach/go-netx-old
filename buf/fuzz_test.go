@@ -29,7 +29,7 @@ func FuzzGetRelease(f *testing.F) {
 		for i := 0; i+2 < len(ops); i += 3 {
 			arg := int(binary.LittleEndian.Uint16(ops[i+1 : i+3]))
 			if ops[i]%2 == 0 { // Get
-				size := arg * 2     // up to ~128KB, past the largest class
+				size := arg * 2     // up to ~128KB, past the largest class (64KB)
 				cost := int64(size) // model: next power of two, at least 64, up to 64KB
 				if size <= Large {
 					cost = MinSize

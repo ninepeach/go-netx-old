@@ -65,7 +65,7 @@
 
 ### Changed
 
-- buf: size classes are powers of two from 64B to 128KB (12 classes)
+- buf: size classes are powers of two from 64B to 64KB (11 classes)
   instead of 2KB, 16KB and 64KB, so a buffer is less than twice its
   request: a 3KB message holds 4KB instead of 16KB and a 50B packet 64B
   instead of 2KB. Get + Release is unchanged at about 9ns and 0 allocs.
@@ -138,10 +138,6 @@
   and on FreeBSD via `SO_REUSEPORT_LB` (balanced).
 
 ### Fixed
-
-- stream: `ReaderOptions.Max` defaults to 64KB again. It followed
-  `buf.Large`, so raising the largest pooled class to 128KB (#35) silently
-  doubled the frame size a zero-value Reader accepted.
 
 - tcp, udp: a `Shutdown` that runs before `Serve` was first called makes
   that `Serve` return nil instead of `ErrClosed`. A stop arriving during

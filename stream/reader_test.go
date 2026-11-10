@@ -343,17 +343,14 @@ func TestShrinkReturnsGrownBufferWhenEmpty(t *testing.T) {
 	}
 }
 
-// The default Max stays 64KB when buf's largest pooled class grows (128KB
-// since #35): a Reader built with zero options must not start accepting
-// frames twice as large.
+// The default Max is pinned at 64KB, independent of buf's largest pooled
+// class (#35 once raised that to 128KB): a Reader built with zero options
+// must never silently start accepting larger frames.
 //
 // Checks: STREAM-23
 func TestDefaultMaxIs64KB(t *testing.T) {
 	r := NewReader(&chunks{}, buf.NewPool(nil), ReaderOptions{})
 	if _, err := r.Peek(64<<10 + 1); err != ErrTooLarge {
 		t.Fatalf("Peek(64KB+1) = %v, want ErrTooLarge", err)
-	}
-	if buf.Large <= 64<<10 {
-		t.Skip("buf.Large no longer above 64KB; nothing to pin")
 	}
 }

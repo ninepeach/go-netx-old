@@ -34,8 +34,9 @@ var (
 )
 
 // defaultMax is ReaderOptions.Max when unset. It is fixed at 64KB rather
-// than following buf.Large, so raising the largest pooled class (to 128KB in
-// #35) does not silently double the frame size every Reader accepts.
+// than following buf.Large, so a change to the largest pooled class (#35
+// raised it to 128KB for a while) never silently changes the frame size
+// every Reader accepts.
 const defaultMax = 64 << 10
 
 // ReaderOptions configures a Reader.

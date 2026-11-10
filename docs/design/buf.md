@@ -6,7 +6,7 @@ Overall design: [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
 | Owns | Does not own |
 |---|---|
-| Pooled byte buffers in power-of-two size classes (64B…128KB) | I/O (see `stream`) |
+| Pooled byte buffers in power-of-two size classes (64B…64KB) | I/O (see `stream`) |
 | The ownership rules every go-netx package follows | Encoding |
 | Charging in-use memory to a `limit.Budget` | Process memory limits |
 | Debug-build ownership checks | |
@@ -43,7 +43,7 @@ Discard paths are where leaks happen, which is why `queue` has `OnDrop` and
 
 ## 4. Design
 
-**Power-of-two classes, 64B to 128KB (D-21).** Twelve classes, one
+**Power-of-two classes, 64B to 64KB (D-21, D-26).** Eleven classes, one
 `sync.Pool` each. A request takes the smallest class that holds it, found
 with one `bits.Len`, so capacity is under twice the length (from 64B up)
 and the budget, which charges capacity, holds at least half data. This is
@@ -53,9 +53,12 @@ earlier three classes (2KB, 16KB, 64KB) wasted up to 8×: a 3KB IM message
 held 16KB and a 50B game packet 2KB; now they hold 4KB and 64B. More
 classes cost nothing measurable: each class is its own per-P pool, and Get
 + Release stayed at about 9ns. 64B is the floor because smaller buffers
-save little next to the `Buf` header. 128KB is the largest pooled
-buffer (raised from 64KB in #35); `udp.MaxDatagram` and the default
-`stream.ReaderOptions.Max` (64KB) are separate limits and did not change.
+save little next to the `Buf` header. 64KB is the largest pooled buffer
+(D-26), as in sing and smux: a pooled buffer stays on the heap for two GC
+cycles after its last use, so pooling rare large ones keeps a burst's
+worth of them alive and raises the next GC target (the reason `fmt` drops
+buffers over 64KB, golang/go#23199). #35 raised it to 128KB; it was put
+back. The default `stream.ReaderOptions.Max` is pinned at 64KB on its own.
 Requests above `Large` are allocated directly and not pooled, but still
 budgeted. `Capacity(n)` exposes the rounding so callers can plan budgets
 and `stream.Reader` can grow class by class.
@@ -91,9 +94,9 @@ both.
 
 ## 6. Performance (2 vCPU)
 
-Get + Release about 6–7ns at every pooled size from 64B to 128KB (70KB
-now lands in the 128KB class), 0 allocations; unpooled (140KB) about 24µs
-and 2 allocations (`BenchmarkGetReleaseBySize`, medians of 6, 2026-11-11).
+Get + Release about 6–7ns at every pooled size from 64B to 64KB, 0
+allocations; unpooled requests (70KB, 140KB) cost an allocation and its
+zeroing, measured below (`BenchmarkGetReleaseBySize`, medians of 6).
 The three-class version measured about 9ns in an earlier run on the same
 VM.
 
@@ -105,11 +108,12 @@ VM.
 | 3000B | 16KB | 4KB |
 | 9000B | 16KB | 16KB |
 | 40000B | 64KB | 64KB |
-| 70000B | unpooled | 128KB |
+| 70000B | unpooled | unpooled |
 
 ## 7. Decisions
 
-D-05 (budget counts in-use memory only), D-21 (power-of-two classes).
+D-05 (budget counts in-use memory only), D-21 (power-of-two classes),
+D-26 (largest pooled class 64KB).
 
 ## 8. Testing
 
