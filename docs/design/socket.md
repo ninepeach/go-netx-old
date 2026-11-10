@@ -25,6 +25,7 @@ type FastOpenOptions struct { Enabled bool; Backlog int }
 func ListenConfig(Options) net.ListenConfig
 func Listen(ctx, network, address string, Options) (net.Listener, error) // + post-listen options
 func Dialer(base net.Dialer, Options) net.Dialer // returns a copy
+func CheckDialer(Options) error                  // the error every dial would return, without dialing
 func SetBuffers(BufferSetter, Options) error     // for sockets made elsewhere
 func IsUnsupported(error) bool                   // *UnsupportedOptionError
 func Supported() Capabilities                    // FastOpenListen, ReusePortBalanced
@@ -95,6 +96,11 @@ succeeds too, and the failure appears only at Read. The dial timeout and
 treat a dead upstream as up. That changes behaviour, so a Dialer with
 `FastOpen.Enabled` returns `*UnsupportedOptionError` with `Platform`
 `"dialed connections"` on every platform; listeners keep Fast Open.
+`CheckDialer` returns that error without dialing, so a configuration can
+be rejected at startup; `tcp.DialOptions.Validate` wraps it, and a
+`tcp.Dialer` built from such options fails every dial at once, before
+resolving the address or opening a socket (DIAL-09). `socket.Dialer`
+itself returns a plain `net.Dialer`, which can only fail per dial.
 
 **ReusePort.** Linux uses `SO_REUSEPORT`; FreeBSD uses
 `SO_REUSEPORT_LB` to distribute connections and datagrams. macOS accepts
