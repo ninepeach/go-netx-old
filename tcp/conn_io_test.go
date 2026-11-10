@@ -252,3 +252,226 @@ func TestConnNonTCPUnderlying(t *testing.T) {
 		t.Fatalf("wrapper saw %d bytes read, want %d", r, len(data))
 	}
 }
+
+// The two directions close independently, and a half-close is not a
+// close: after CloseWrite the handler still receives what the client
+// sends; after CloseRead it can still send; in both cases the server
+// still counts the connection active and the handler keeps running until
+// it returns.
+//
+// Checks: TCP-35
+func TestConnHalfCloseKeepsOtherDirection(t *testing.T) {
+	step := make(chan string, 4)
+	s, _ := start(t, func(_ context.Context, c *tcp.Conn) {
+		var first [1]byte
+		c.Read(first[:]) // which test: 'w' or 'r'
+		switch first[0] {
+		case 'w':
+			if err := c.CloseWrite(); err != nil {
+				step <- "CloseWrite: " + err.Error()
+				return
+			}
+			got, err := io.ReadAll(c) // the client still sends after our FIN
+			if err != nil {
+				step <- "read after CloseWrite: " + err.Error()
+				return
+			}
+			step <- "received " + string(got)
+		case 'r':
+			if err := c.CloseRead(); err != nil {
+				step <- "CloseRead: " + err.Error()
+				return
+			}
+			if _, err := c.Write([]byte("still writing")); err != nil {
+				step <- "write after CloseRead: " + err.Error()
+				return
+			}
+			c.CloseWrite()
+			step <- "sent"
+		}
+	}, tcp.Options{})
+
+	// Write side closed; the read side keeps working.
+	c := dial(t, s).(*net.TCPConn)
+	c.Write([]byte("w"))
+	if got, err := io.ReadAll(c); err != nil || len(got) != 0 { // the handler's FIN
+		t.Fatalf("client read %q, %v; want EOF", got, err)
+	}
+	if a := s.Stats().Active; a != 1 {
+		t.Fatalf("after CloseWrite: %d active connections, want 1", a)
+	}
+	c.Write([]byte("after half-close"))
+	c.CloseWrite()
+	if got := <-step; got != "received after half-close" {
+		t.Fatal(got)
+	}
+
+	// Read side closed; the write side keeps working.
+	c2 := dial(t, s).(*net.TCPConn)
+	c2.Write([]byte("r"))
+	got, err := io.ReadAll(c2)
+	if err != nil || string(got) != "still writing" {
+		t.Fatalf("client read %q, %v", got, err)
+	}
+	if got := <-step; got != "sent" {
+		t.Fatal(got)
+	}
+}
+
+// spyConn records which copy path io.Copy took into or out of it.
+type spyConn struct {
+	net.Conn
+	readFrom, writeTo atomic.Bool
+}
+
+func (c *spyConn) ReadFrom(r io.Reader) (int64, error) {
+	c.readFrom.Store(true)
+	return io.Copy(writerOnly{c.Conn}, r)
+}
+
+func (c *spyConn) WriteTo(w io.Writer) (int64, error) {
+	c.writeTo.Store(true)
+	return io.Copy(w, readerOnly{c.Conn})
+}
+
+type writerOnly struct{ io.Writer }
+type readerOnly struct{ io.Reader }
+
+// srcWithWriteTo is a source with its own WriterTo.
+type srcWithWriteTo struct {
+	data   []byte
+	called bool
+}
+
+func (s *srcWithWriteTo) Read([]byte) (int, error) { panic("io.Copy should use WriteTo") }
+func (s *srcWithWriteTo) WriteTo(w io.Writer) (int64, error) {
+	s.called = true
+	n, err := w.Write(s.data)
+	return int64(n), err
+}
+
+// io.Copy's order is kept through *tcp.Conn: it uses the source's WriteTo
+// first (a *tcp.Conn source hands it to the embedded connection's
+// WriteTo), and otherwise the destination's ReadFrom (a *tcp.Conn
+// destination hands it to the embedded connection's ReadFrom). A source
+// with its own WriteTo is used as is, and the data arrives either way.
+//
+// Checks: TCP-36
+func TestConnIOCopyPathSelection(t *testing.T) {
+	data := bytes.Repeat([]byte("abcdefgh"), 4096)
+
+	// Source *tcp.Conn: io.Copy calls its WriteTo, which reaches the spy's.
+	a, b := net.Pipe()
+	spy := &spyConn{Conn: a}
+	go func() { b.Write(data); b.Close() }()
+	var out bytes.Buffer
+	if n, err := io.Copy(&out, &tcp.Conn{Conn: spy}); n != int64(len(data)) || err != nil || !bytes.Equal(out.Bytes(), data) {
+		t.Fatalf("copy from *tcp.Conn = %d, %v", n, err)
+	}
+	if !spy.writeTo.Load() || spy.readFrom.Load() {
+		t.Fatalf("source path: WriteTo %v ReadFrom %v; want WriteTo only", spy.writeTo.Load(), spy.readFrom.Load())
+	}
+	a.Close()
+
+	// Destination *tcp.Conn, plain source: io.Copy calls its ReadFrom.
+	a, b = net.Pipe()
+	spy = &spyConn{Conn: a}
+	recv := make(chan []byte, 1)
+	go func() { got, _ := io.ReadAll(b); recv <- got }()
+	plain := struct{ io.Reader }{bytes.NewReader(data)} // no WriterTo
+	if n, err := io.Copy(&tcp.Conn{Conn: spy}, plain); n != int64(len(data)) || err != nil {
+		t.Fatalf("copy into *tcp.Conn = %d, %v", n, err)
+	}
+	a.Close()
+	if got := <-recv; !bytes.Equal(got, data) {
+		t.Fatal("copy into *tcp.Conn delivered different bytes")
+	}
+	if !spy.readFrom.Load() || spy.writeTo.Load() {
+		t.Fatalf("destination path: ReadFrom %v WriteTo %v; want ReadFrom only", spy.readFrom.Load(), spy.writeTo.Load())
+	}
+
+	// Destination *tcp.Conn, source with its own WriteTo: the source wins.
+	a, b = net.Pipe()
+	spy = &spyConn{Conn: a}
+	go io.ReadAll(b)
+	src := &srcWithWriteTo{data: data}
+	if n, err := io.Copy(&tcp.Conn{Conn: spy}, src); n != int64(len(data)) || err != nil {
+		t.Fatalf("copy with source WriteTo = %d, %v", n, err)
+	}
+	if !src.called || spy.readFrom.Load() {
+		t.Fatalf("source WriteTo %v, destination ReadFrom %v; want the source's", src.called, spy.readFrom.Load())
+	}
+	a.Close()
+}
+
+// failingReader returns n bytes, then err.
+type failingReader struct {
+	n   int
+	err error
+}
+
+func (r *failingReader) Read(p []byte) (int, error) {
+	if r.n == 0 {
+		return 0, r.err
+	}
+	k := min(len(p), r.n)
+	r.n -= k
+	return k, nil
+}
+
+// shortWriter accepts at most half of each write and reports no error,
+// which io.Writer forbids.
+type shortWriter struct{}
+
+func (shortWriter) Write(p []byte) (int, error) { return len(p) / 2, nil }
+
+// Edges on a real TCP connection: ReadFrom stops at the source's error and
+// returns it (wrapped in *net.OpError by the standard library) with the
+// bytes already sent; WriteTo returns a nil error at
+// EOF with every byte, and io.ErrShortWrite for a writer that writes less
+// without an error; after Close, all four methods return net.ErrClosed.
+//
+// Checks: TCP-37
+func TestConnCopyEdges(t *testing.T) {
+	conns, clients := accepted(t, 3)
+
+	// ReadFrom: the source's error comes back with the count.
+	boom := errors.New("source failed")
+	recv := make(chan int, 1)
+	go func() { got, _ := io.ReadAll(clients[0]); recv <- len(got) }()
+	if n, err := conns[0].ReadFrom(&failingReader{n: 5000, err: boom}); n != 5000 || !errors.Is(err, boom) { // TCPConn wraps it in *net.OpError
+		t.Fatalf("ReadFrom = %d, %v; want 5000, source error", n, err)
+	}
+	conns[0].CloseWrite()
+	if got := <-recv; got != 5000 {
+		t.Fatalf("peer received %d bytes, want 5000", got)
+	}
+
+	// WriteTo: EOF is a clean end; a short write is an error.
+	go func() { clients[1].Write(bytes.Repeat([]byte("z"), 3000)); clients[1].CloseWrite() }()
+	var out bytes.Buffer
+	if n, err := conns[1].WriteTo(&out); n != 3000 || err != nil {
+		t.Fatalf("WriteTo to EOF = %d, %v; want 3000, nil", n, err)
+	}
+	go func() { clients[2].Write([]byte("0123456789")); clients[2].CloseWrite() }()
+	if _, err := conns[2].WriteTo(shortWriter{}); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("WriteTo short writer = %v, want io.ErrShortWrite", err)
+	}
+
+	// After Close.
+	conns[0].Close()
+	for name, err := range map[string]error{
+		"CloseWrite": conns[0].CloseWrite(),
+		"CloseRead":  conns[0].CloseRead(),
+	} {
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("%s after Close = %v, want net.ErrClosed", name, err)
+		}
+	}
+	if _, err := conns[0].ReadFrom(bytes.NewReader([]byte("x"))); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("ReadFrom after Close = %v", err)
+	}
+	if _, err := conns[0].WriteTo(io.Discard); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("WriteTo after Close = %v", err)
+	}
+}
