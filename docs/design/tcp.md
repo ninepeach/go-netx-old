@@ -38,6 +38,9 @@ type Conn struct{ net.Conn /* … */ }
 func (*Conn) ID() uint64                      // unique per process
 func (*Conn) Draining() <-chan struct{}
 func (*Conn) WriteBuffers(*net.Buffers) (int64, error)
+func (*Conn) CloseWrite() error; CloseRead() error // errors.ErrUnsupported if not TCP
+func (*Conn) ReadFrom(io.Reader) (int64, error)    // io.Copy reaches the TCP fast path
+func (*Conn) WriteTo(io.Writer) (int64, error)
 
 func NewDialer(DialOptions) *Dialer           // Timeout, KeepAlive, Socket (no FastOpen, D-19), OnDial
 func (DialOptions) Validate() error           // at startup: FastOpen → *socket.UnsupportedOptionError
@@ -82,6 +85,22 @@ Handlers keep their context during the drain; long-lived ones select on
 standard library's own connection types; `*Conn` wraps one, so it would
 fall back to one Write per buffer. `WriteBuffers` hands the vector to the
 inner connection (`stream.BuffersWriter`).
+
+**Half-close and copy passthrough.** `Conn` embeds `net.Conn`, an
+interface, so the `*net.TCPConn` inside is reachable only through methods
+`Conn` forwards. Without `CloseWrite`, a proxy that half-closes the
+destination when one direction ends (Ferry's relay checks for the method)
+silently skipped it, and the peer never saw a FIN. Without `ReadFrom` and
+`WriteTo`, `io.Copy` through a `*Conn` never reached the standard
+library's TCP path, so on Linux it never used splice: copying 32MB between
+an accepted `*Conn` and a dialed `*net.TCPConn` made 0 splice calls in
+either direction before and 115 after (strace, 2026-11-11). Each method
+forwards to the embedded connection itself, never below it: `Conn` adds
+nothing to `Read` and `Write`, and a caller's wrapper from `NewServer`
+keeps its logic (its own `Read`/`Write` are used when it has no
+`ReadFrom`). When the embedded connection is not TCP, `CloseWrite` and
+`CloseRead` return `errors.ErrUnsupported` and close nothing. The relay
+itself (two `io.Copy` and the half-closes) stays in the application.
 
 ## 4. Concurrency
 

@@ -148,6 +148,12 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | TCP-29 | P1 | 双栈监听 `[::]` 同时接受 IPv4 与 IPv6 客户端；IPv4 映射地址按 IPv4 计入 `MaxConnsPerIP`，不占 IPv6 客户端的额度 | ✅ | `tcp.DualStackAcceptsIPv4` | 同上 |
 | TCP-30 | P0 | `Serve` 被调用之前已经 `Shutdown`：第一次 `Serve` 返回 nil、不接受连接，第二次返回 `ErrClosed`；监听已关闭；之后的 `Shutdown` 立即返回 nil | ✅ | `tcp.ServeAfterShutdownBeforeServe` | 调用顺序由测试固定，不依赖调度；REG-34 |
 | TCP-31 | P1 | `Serve` 之前 `Close`（中止）：`Serve` 仍返回 `ErrClosed`，重复调用也是；只有优雅的 `Shutdown` 算作已请求的停止 | ✅ | `tcp.ServeAfterCloseBeforeServeIsErrClosed` |  |
+| TCP-32 | P0 | 已接受的 `*tcp.Conn` 半关闭：客户端发完请求 `CloseWrite`，handler 读到 EOF 后回复并 `CloseWrite`，客户端读到完整回复和 EOF，连接未完全关闭；另一条连接上 `CloseRead` 之后 `Read` 立即返回、无数据、带错误（Unix 为 EOF，Windows 为 WSAESHUTDOWN），客户端仍可发送 | ✅ | `tcp.ConnHalfClose` | REG-38 |
+| TCP-33 | P0 | `io.Copy` 经过 `*tcp.Conn` 双向转发（`*tcp.Conn`↔`*tcp.Conn`、`*tcp.Conn`↔`*net.TCPConn`）：每个方向 1MB 完整送达，各自的半关闭传到对端，两个 Copy 都在不完全关闭的情况下结束；`*tcp.Conn` 实现 `io.ReaderFrom`、`io.WriterTo`、`CloseWrite`、`CloseRead` | ✅ | `tcp.ConnRelayWithIOCopy` | Linux 上走 splice 由 strace 实测（见 design/tcp.md）；REG-38 |
+| TCP-34 | P1 | 底层不是 TCP（`NewServer` 配自定义 listener，这里是包装过的 `net.Pipe`）：`CloseWrite`/`CloseRead` 返回 `errors.ErrUnsupported` 且不关闭任何东西；`ReadFrom`/`WriteTo` 经过包装器自己的 `Read`/`Write`，包装器看到全部字节，数据完整 | ✅ | `tcp.ConnNonTCPUnderlying` |  |
+| TCP-35 | P0 | 两个方向独立半关闭，且半关闭不是关闭：`CloseWrite` 后 handler 仍收到客户端随后发来的数据；`CloseRead` 后仍可写，客户端收到；期间 `Stats().Active` 仍为 1，handler 继续运行 | ✅ | `tcp.ConnHalfCloseKeepsOtherDirection` |  |
+| TCP-36 | P0 | 经过 `*tcp.Conn` 时 `io.Copy` 的选择顺序不变：源为 `*tcp.Conn` 时走其 `WriteTo`（转给内嵌连接的 `WriteTo`）；目标为 `*tcp.Conn`、源无 `WriteTo` 时走其 `ReadFrom`；源自带 `WriteTo` 时用源的，不调用目标的 `ReadFrom`；数据完整 | ✅ | `tcp.ConnIOCopyPathSelection` |  |
+| TCP-37 | P1 | 边界：`ReadFrom` 遇来源错误时返回已发送字节数和该错误（标准库包成 `*net.OpError`，`errors.Is` 可识别）；`WriteTo` 读到 EOF 返回 nil，遇少写且无错误的 writer 返回 `io.ErrShortWrite`；`Close` 之后四个方法都返回 `net.ErrClosed` | ✅ | `tcp.ConnCopyEdges` |  |
 
 ### 3.3 Dialer
 
@@ -340,6 +346,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | BUF-11 | P2 | GC 回收池中对象后，正确性不受影响 | ✅ | `buf.PoolCorrectAcrossGC` |  |
 | BUF-12 | P2 | 热路径零分配 | ✅ | `buf.BenchmarkGetReleaseBySize`<br>`buf.BenchmarkGetRelease`<br>`buf.BenchmarkHeaderPath` |  |
 | BUF-13 | P1 | Release 后 `Len`、`Cap` 归零；池化 buffer 再次取出时是干净的空 buffer；超过 64KB 的不进池，Release 后不再引用其内存 | ✅ | `buf.ReleaseResetsAndDropsUnpooled` | REG-37 |
+| REG-38 | tcp | `tcp.Conn` 内嵌 `net.Conn` 接口，底层 `*net.TCPConn` 的 `CloseWrite`、`ReadFrom`、`WriteTo` 被隐藏：代理按接口检查后静默跳过半关闭，对端收不到 FIN（Ferry socks5 入站即如此）；`io.Copy` 到不了标准库的 TCP 路径，Linux 上 32MB 转发 splice 调用 0 次（修复后 115 次，strace 实测） |  | ✅ |
 | BUF-14 | P1 | 预算不足时不会先扣掉一部分 | ➖ |  | D-24：buf 没有预算 |
 | BUF-15 | P0 | 档位都是 2 的幂，共 11 档（64B…64KB，D-26）；内存不小于请求、从 64B 起小于请求的 2 倍；`Capacity(n)` 与 `Get(n)` 实际占用的内存一致；头部空间计入档位 | ✅ | `buf.PowerOfTwoClasses` |  |
 | BUF-16 | P1 | 对 nil 调用 `Release` 什么都不做 | ✅ | `buf.ReleaseNilIsNoop` |  |
