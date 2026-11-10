@@ -359,6 +359,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | BUF-23 | P1 | 批量辅助函数：`LenMulti`/`IsEmptyMulti` 只计数据；`ToSliceMulti` 按顺序别名每个缓冲区，可作 `net.Buffers` 写出；`CopyMulti` 在 `len(dst)` 处停止；`ReleaseMulti` 每个缓冲区只释放一次、清空切片、跳过 nil | ✅ | `buf.Multi` |  |
 | BUF-24 | P0 | `Advance(math.MaxInt)` 只丢弃 `Len` 字节，游标不溢出成负数，之后仍可 `ExtendHeader` | ✅ | `buf.AdvanceHugeDoesNotOverflow` | REG-35 |
 | BUF-25 | P0 | 来源或目标报告越界计数（负数、超过给定空间）时，`ReadOnceFrom`/`ReadPacketFrom`/`WriteTo` 返回 `ErrInvalidCount` 且不改变缓冲区；`WriteTo` 少写且无错误时返回 `io.ErrShortWrite`，不消费数据 | ✅ | `buf.InvalidIOCounts` | REG-36 |
+| BUF-26 | P1 | `New`/`NewPacket` 从 `Default` 取空 buffer，容量分别为 `BufferSize`（32KB）和 `UDPBufferSize`（16KB），都在池化档位内 | ✅ | `buf.DefaultSizes` | D-27 |
 | REG-37 | buf | 超过 64KB 的非池化 buffer 在 Release 后仍引用底层内存（实测 65537 字节）：调用方若在结构体里留着这个 `*Buf`，整块内存无法回收（外部审查发现） |  | ✅ |
 
 ## 8.5 stream：流式读写
@@ -522,6 +523,7 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | D-20 | `Get` 只查找，`Touch` 是唯一更新 LastSeen 的操作 | 查找时顺带刷新时间，会让后台查询、`Range`、管理操作把空闲 flow 一直续命。拆开后，空闲超时只反映网关显式记录的真实流量。查找与 Touch 之间被 Sweep 插入的竞态（REG-15）改用“LastSeen 加冻结位”的单字 CAS 解决。代价：网关在收到数据时要自己调用 `Touch` 或 `GetAndTouch`；`Get` 因此更快 |
 | D-21 | buf 改为 2 的幂分档（64B…64KB，共 11 档；上限见 D-26），取代原来的 2KB、16KB、64KB 三档 | 三档最多浪费 8 倍，预算按容量扣，等于同样的预算少装好几倍数据（3KB 的消息占 16KB，50B 的包占 2KB）。主流 Go 缓冲池（netpoll 用的 mcache、fasthttp 用的 bytebufferpool、smux、gnet、libp2p）都按 2 倍分档。实测档位增多不影响速度（Get + Release 仍约 9ns，0 分配）。下限 64B：再小相对 `Buf` 本身的开销省不了多少 |
 | D-26 | buf 最大池化档位定为 64KB（11 档），不扩到 128KB 或 2MiB；更大的请求直接分配、不进池 | 放进 `sync.Pool` 的 buffer 在最后一次使用后还要在堆上留两轮 GC，并抬高下次 GC 的触发点；池化少见的大块会让一次突发的量（例如 1000 个 1–2MiB）长时间占着内存，而预算将移出 buf，期间没有上限（标准库 `fmt` 因此丢弃超过 64KB 的 buffer，golang/go#23199）。超过 64KB 的请求在网关里少见，直接分配的代价（实测 140KB 约 24µs）可以接受，且 2 的幂档位对 1.1MiB 这类请求会浪费近一半。sing、smux 同样上限 64KB。#35 曾扩到 128KB，按此决定改回 |
+| D-27 | buf 提供 sing 的默认大小：`BufferSize` 32KB、`UDPBufferSize` 16KB，以及 `New`、`NewPacket`；不提供 `with_low_memory` 构建标签；go-netx 内部不使用它们 | 代理类应用（Ferry）在连接间拷贝时需要一个固定块，照搬 sing 的大小和函数名，迁移 sing 代码时不用自己选大小。它们只是调用方的默认值：`stream.Reader` 仍然空闲 512B、按需借块、上限 64KB，按 32KB 读会让 1 万个空闲连接多占约 320MB。要更小的块直接 `Get(n)`，不需要构建标签 |
 | D-24 | buf 不做内存限制：去掉 `NewPool(*limit.Budget)`，`Get` 不返回 nil，`stream.ErrNoBuffer` 删除 | 内存保护属于应用层，在初始化时决定：`Admit`、`MaxConnsPerIP` 限制连接数，`ReaderOptions.Max` 限制单连接缓冲，最坏约为连接数 × Max；需要按字节限流的网关在 `Get` 外面用 `limit.Budget`（INT-07）。buf 因此不依赖 limit，热路径少一次原子操作。与 sing 的 `common/buf` 一致。代价：buf 内部不再有“超出就拒绝”的兜底，由应用负责 |
 | D-25 | buf 不做引用计数 | sing 的 `IncRef`/`DecRef` 只计数：计数大于 0 时 `Release` 不做事，减到 0 也不会自动释放，漏一次就泄漏。共享的不可变数据已有 `stream.Writer.AddShared`；真需要共享所有权时，再按“最后一个 Release 才归还”实现 |
 | D-22 | `Table.Close` 是永久关闭，之后 `GetOrOpen` 返回 `(nil, false)` | 原来的 Close 只是清空：Run 因 ctx 结束返回后，仍在运行的 UDP reader 会继续插入 flow，这些 flow 再也没人清理（REG-33）。永久关闭让“Run 返回后表里没有 flow、每个 flow 都收到 OnClose”成立。代价：行为变化，Close 之后不能再复用这张表；需要清空重用的调用方新建一张表 |

@@ -17,6 +17,9 @@
   and `io.Copy` through a `*tcp.Conn` reaches the standard library's TCP
   path (splice on Linux). For a non-TCP connection from `NewServer`, the
   close methods return `errors.ErrUnsupported`.
+- buf: sing's default sizes `BufferSize` (32KB) and `UDPBufferSize` (16KB)
+  with `New()` and `NewPacket()` (D-27). go-netx itself does not use them;
+  `stream.Reader` keeps its 512B idle buffer.
 - buf: batch helpers after sing's `multi.go`: `LenMulti`, `IsEmptyMulti`,
   `ToSliceMulti`, `CopyMulti`, `ReleaseMulti`.
 
