@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// Checks: SOCK-26
 func TestZZDiagFastOpenDarwin(t *testing.T) {
 	mode, serr := syscall.SysctlUint32("net.inet.tcp.fastopen")
 	t.Logf("sysctl net.inet.tcp.fastopen=%d err=%v", mode, serr)
