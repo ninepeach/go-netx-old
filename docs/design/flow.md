@@ -34,14 +34,17 @@ type TableOptions[K comparable, V any] struct {
     Shards      int           // power of two, default 64
     IdleTimeout time.Duration // 0 = no expiry
     OnClose     func(K, *Flow[V]) // exactly once per flow leaving the table
+    MaxFlows    int               // 0 = no limit; full → GetOrOpen returns nil, false
 }
 func (*Table) Get(K) (*Flow[V], bool)          // pure lookup, LastSeen unchanged
 func (*Table) GetAndTouch(K) (*Flow[V], bool)  // Get, then Touch: the per-packet path
-func (*Table) GetOrOpen(K, newValue func() V) (*Flow[V], bool) // new flow: LastSeen = table clock
+func (*Table) GetOrOpen(K, newValue func() V) (*Flow[V], bool) // new flow: LastSeen = table clock; nil after Close or when full
 func (*Table) Remove(K, id uint64) bool // only if the ID still matches
 func (*Table) Sweep(now time.Time) int
-func (*Table) Run(context.Context) error // clock + sweeps; closes all on exit
-func (*Table) Close()
+func (*Table) Run(context.Context) error // clock + sweeps; Close on exit
+func (*Table) Close()                   // permanent: no flows afterwards
+func (*Table) Closed() bool
+func (*Table) Refused() uint64          // GetOrOpen calls refused by MaxFlows
 func (*Table) Len() int
 func (*Table) Range(func(K, *Flow[V]) bool)
 ```
@@ -110,6 +113,18 @@ evict a flow between lookup and touch (REG-15); the CAS above gives the
 same guarantee for a separate `Touch`: if Sweep wins, the Touch is a no-op
 and the flow is visibly not Open.
 
+**Close is permanent (D-22).** `Close` marks every shard closed under its
+lock while emptying it, so a `GetOrOpen` racing it either lands before the
+shard is emptied (and is closed with it) or sees the mark and creates
+nothing. That makes "after Run returns the table is empty and every flow
+got its OnClose" hold even while UDP readers are still running (REG-33).
+
+**MaxFlows (D-23).** An optional cap against spoofed-source floods. The
+count is one atomic, touched only when a flow is created or leaves; a full
+table refuses new keys (`Refused` counts them) and keeps serving existing
+flows. There is no eviction of old flows to make room: that would let a
+flood push out real sessions.
+
 ## 4. Performance (2 vCPU)
 
 - `Get` on `netip.AddrPort` (a pure lookup): about 48ns at 1k flows, 80ns
@@ -134,9 +149,11 @@ million flows, then becomes incremental (a few shards per tick).
 D-20: `Get` is a pure lookup; `Touch` is the only operation that records
 activity.
 
+D-22: `Close` is permanent. D-23: optional `MaxFlows`, refusing new keys.
+
 ## 6. Testing
 
-FLOW-01…FLOW-29, NF-05 (stress), NF-09 (fuzz), NF-14 in
+FLOW-01…FLOW-33, NF-05 (stress), NF-09 (fuzz), NF-14 in
 [docs/TESTING.md](../TESTING.md).
 
 ## 7. Open items

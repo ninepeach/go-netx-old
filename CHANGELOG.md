@@ -4,6 +4,9 @@
 
 ### Added
 
+- flow: `TableOptions.MaxFlows` caps the number of flows; a full table's
+  `GetOrOpen` returns `(nil, false)` for new keys and `Table.Refused`
+  counts them. `Table.Closed` reports whether Close was called.
 - stream: `Writer.AddShared([]byte)` queues immutable data shared by many
   connections (an encoded game configuration, a broadcast) in order with
   owned buffers, without copying it or taking ownership; `Pending` counts
@@ -58,6 +61,12 @@
   **Behaviour change:** budgets now cost `buf.Capacity(n)` per buffer;
   code that computed budgets from `Small`/`Medium` should use `Capacity`.
 - buf: `Release` on a nil `*Buf` does nothing.
+- flow: `Table.Close` (and `Run` on exit) closes the table for good:
+  afterwards `GetOrOpen` creates nothing and returns `(nil, false)`.
+  Before, flows inserted during or after Close stayed in the table with
+  no sweep and no OnClose. **Behaviour change:** create a new table
+  instead of reusing a closed one, and handle a nil flow from
+  `GetOrOpen`.
 - stream: `Reader` grows through the power-of-two classes.
 - flow: `Table.Get` is a pure lookup and `GetOrOpen` no longer refreshes
   an existing flow's `LastSeen`; a new flow's `LastSeen` starts at the

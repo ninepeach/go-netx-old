@@ -247,6 +247,10 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | FLOW-27 | P0 | `Get` 后 `Touch`，在 IdleTimeout 内不会被清理，超过后被清理 | ✅ | `flow.TouchKeepsFlowUntilIdle` |  |
 | FLOW-28 | P0 | `Touch` 与 `Sweep` 并发：要么 Touch 先生效、flow 保留且 LastSeen 为新值，要么 Sweep 先决定、flow 以旧 LastSeen 关闭并离开表、OnClose 一次；之后 Touch 无效 | ✅ | `flow.TouchRacingSweep` |  |
 | FLOW-29 | P1 | `Remove` 之后 `Touch` 无效：LastSeen 不变、状态为 Closed、不会回到表中 | ✅ | `flow.TouchAfterRemoveHasNoEffect` |  |
+| FLOW-30 | P0 | `Close` 是永久关闭：之后 `GetOrOpen` 返回 `(nil, false)` 且不调用 newValue，表中不会再有 flow；`Closed()` 报告状态；`Close` 幂等，OnClose 不重复 | ✅ | `flow.CloseIsPermanent` | D-22 |
+| FLOW-31 | P0 | `Run` 退出时仍有写入方并发 `GetOrOpen`：Run 返回后表为空，每个创建过的 flow 都恰好收到一次 OnClose | ✅ | `flow.NoFlowsSurviveRunExit` | 50 轮，4 个写入方；`-race` 下运行 |
+| FLOW-32 | P1 | `MaxFlows`：满时新 key 返回 `(nil, false)`、不调用 newValue、计入 `Refused()`；已有 flow 照常找到；Remove、Sweep、Close 都归还名额；newValue panic 时名额归还 | ✅ | `flow.BenchmarkGetOrOpenCreate`<br>`flow.MaxFlows` | D-23 |
+| FLOW-33 | P1 | `MaxFlows` 在并发创建下精确：8 个写入方争 100 个名额，恰好创建 100 个，其余计入 `Refused()`；负数 panic | ✅ | `flow.MaxFlowsConcurrent` |  |
 
 ## 6. limit：资源控制
 
@@ -457,6 +461,7 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | REG-30 | stream | 目标少写且返回 nil 时 `Flush` 返回 nil 并释放缓冲区，调用方以为已发完；逐个 Write 路径上每个缓冲区只写出前一段，接收方拿到拼接错乱的流（实测 "abcd"、"efgh"、"ijkl" 写成 "abefij"） | STREAM-21 | ✅ |
 | REG-31 | socket | macOS 在 listen 之前设置 `TCP_FASTOPEN` 返回 EINVAL，开启 FastOpen 的 Listen 直接失败（CI 在 macOS 26 上实测；PR #15 起一直存在，此前没有 macOS 实机运行） | SOCK-06、SOCK-26 | ✅ |
 | REG-32 | udp | macOS 默认 `SO_SNDBUF` 为 9216 字节，超过它的数据报 `WriteTo` 返回 EMSGSIZE，`MaxDatagram` 的约定在 Mac 上不成立（CI 实测） | UDP-19、UDP-20 | ✅ |
+| REG-33 | flow | `Table.Close`（含 Run 退出时的 Close）只清空不关闭，之后或同时到来的 `GetOrOpen` 照常插入；这些 flow 不会被 Sweep 也收不到 OnClose（实测 200 轮后残留 309,607 个） | FLOW-30、FLOW-31 | ✅ |
 
 ### 设计决定
 
@@ -485,6 +490,8 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | D-19 | 拨出方向不支持 FastOpen，Dialer 设置了就报错 | 实测 Linux 上拿到 TFO cookie 后，用 FastOpen 拨一个已关闭的端口，Dial 约 100µs 返回成功，Write 也成功，错误到 Read 才出现，Dial 超时和 `DialEvent` 不再反映对端是否可达，网关会把挂掉的上游当成可用。这会改变行为，不属于 D-18 的性能项。网关拨上游通常不需要省这一个往返；监听端 FastOpen 保留 |
 | D-20 | `Get` 只查找，`Touch` 是唯一更新 LastSeen 的操作 | 查找时顺带刷新时间，会让后台查询、`Range`、管理操作把空闲 flow 一直续命。拆开后，空闲超时只反映网关显式记录的真实流量。查找与 Touch 之间被 Sweep 插入的竞态（REG-15）改用“LastSeen 加冻结位”的单字 CAS 解决。代价：网关在收到数据时要自己调用 `Touch` 或 `GetAndTouch`；`Get` 因此更快 |
 | D-21 | buf 改为 2 的幂分档（64B…64KB，共 11 档），取代原来的 2KB、16KB、64KB 三档 | 三档最多浪费 8 倍，预算按容量扣，等于同样的预算少装好几倍数据（3KB 的消息占 16KB，50B 的包占 2KB）。主流 Go 缓冲池（netpoll 用的 mcache、fasthttp 用的 bytebufferpool、smux、gnet、libp2p）都按 2 倍分档。实测档位增多不影响速度（Get + Release 仍约 9ns，0 分配）。下限 64B：再小相对 `Buf` 本身的开销省不了多少 |
+| D-22 | `Table.Close` 是永久关闭，之后 `GetOrOpen` 返回 `(nil, false)` | 原来的 Close 只是清空：Run 因 ctx 结束返回后，仍在运行的 UDP reader 会继续插入 flow，这些 flow 再也没人清理（REG-33）。永久关闭让“Run 返回后表里没有 flow、每个 flow 都收到 OnClose”成立。代价：行为变化，Close 之后不能再复用这张表；需要清空重用的调用方新建一张表 |
+| D-23 | 新增可选的 `TableOptions.MaxFlows`（默认 0 不限） | UDP 网关每个源地址一个 flow，伪造源地址的洪水会让表在空闲超时内无界增长。上限满时 `GetOrOpen` 返回 `(nil, false)`，由调用方丢包，并用 `Refused()` 计数；已有 flow 不受影响。只在创建时多一次原子加减，查找路径不变（实测 `GetOrOpen` 已有 key、`GetAndTouch` 前后差异在噪声 ±10% 内）。不做淘汰旧 flow 的 LRU：那会让攻击者挤掉真实会话 |
 
 ## 12.1 文档一致性
 
