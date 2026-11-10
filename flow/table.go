@@ -22,6 +22,12 @@ type TableOptions[K comparable, V any] struct {
 	// it. So release a flow's resources in one place, OnClose or the true
 	// return of Flow.Close, not both. It runs outside table locks.
 	OnClose func(K, *Flow[V])
+	// MaxFlows caps the number of flows. When the table is full, GetOrOpen
+	// for a new key creates nothing and returns (nil, false); existing flows
+	// are still found. It bounds memory against a flood of spoofed source
+	// addresses, each of which would otherwise get a flow until it idles
+	// out. Zero means no limit; negative values panic in NewTable.
+	MaxFlows int
 }
 
 // Table maps keys (for example netip.AddrPort) to flows. It is safe for
@@ -33,16 +39,24 @@ type Table[K comparable, V any] struct {
 	idle    int64
 	onClose func(K, *Flow[V])
 	now     atomic.Int64 // coarse clock, advanced by Run
+	max     int64
+	count   atomic.Int64  // flows in the table, kept only when max > 0
+	refused atomic.Uint64 // GetOrOpen calls refused by MaxFlows
+	shut    atomic.Bool
 }
 
 type shard[K comparable, V any] struct {
-	mu sync.Mutex
-	m  map[K]*Flow[V]
-	_  [48]byte // keep neighbouring shard locks off one cache line
+	mu     sync.Mutex
+	m      map[K]*Flow[V]
+	closed bool     // set under mu by Table.Close; no inserts afterwards
+	_      [40]byte // keep neighbouring shard locks off one cache line
 }
 
-// NewTable returns an empty table.
+// NewTable returns an empty table. It panics if MaxFlows is negative.
 func NewTable[K comparable, V any](o TableOptions[K, V]) *Table[K, V] {
+	if o.MaxFlows < 0 {
+		panic("flow: negative MaxFlows")
+	}
 	n := o.Shards
 	if n <= 0 {
 		n = 64
@@ -54,6 +68,7 @@ func NewTable[K comparable, V any](o TableOptions[K, V]) *Table[K, V] {
 	t := &Table[K, V]{
 		shards: make([]shard[K, V], size), mask: uint64(size - 1),
 		seed: maphash.MakeSeed(), idle: int64(o.IdleTimeout), onClose: o.OnClose,
+		max: int64(o.MaxFlows),
 	}
 	for i := range t.shards {
 		t.shards[i].m = make(map[K]*Flow[V])
@@ -95,20 +110,53 @@ func (t *Table[K, V]) GetAndTouch(k K) (*Flow[V], bool) {
 // does not change its LastSeen. newValue runs under the shard lock and must
 // be fast. If it panics, the panic propagates, no flow is inserted and the
 // shard stays usable.
+//
+// It returns (nil, false) without calling newValue when no flow can be
+// created: after Close, or when MaxFlows flows already exist (counted by
+// Refused). Callers drop the packet in that case.
 func (t *Table[K, V]) GetOrOpen(k K, newValue func() V) (f *Flow[V], created bool) {
 	s := t.shard(k)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	f, ok := s.m[k]
-	if !ok {
-		var v V
-		if newValue != nil {
-			v = newValue()
-		}
-		f = newInTable(v, &t.now)
-		s.m[k] = f
+	if f, ok := s.m[k]; ok {
+		return f, false
 	}
-	return f, !ok
+	if s.closed {
+		return nil, false
+	}
+	if t.max > 0 {
+		if t.count.Add(1) > t.max {
+			t.count.Add(-1)
+			t.refused.Add(1)
+			return nil, false
+		}
+		defer func() {
+			if f == nil { // newValue panicked: give the slot back
+				t.count.Add(-1)
+			}
+		}()
+	}
+	var v V
+	if newValue != nil {
+		v = newValue()
+	}
+	f = newInTable(v, &t.now)
+	s.m[k] = f
+	return f, true
+}
+
+// Refused returns how many GetOrOpen calls MaxFlows refused.
+func (t *Table[K, V]) Refused() uint64 { return t.refused.Load() }
+
+// Closed reports whether Close has been called. A closed table holds no
+// flows and creates none.
+func (t *Table[K, V]) Closed() bool { return t.shut.Load() }
+
+// left records that n flows left the table.
+func (t *Table[K, V]) left(n int) {
+	if t.max > 0 && n > 0 {
+		t.count.Add(int64(-n))
+	}
 }
 
 // Remove closes and removes the flow for k only if its ID is id, so a stale
@@ -125,6 +173,7 @@ func (t *Table[K, V]) Remove(k K, id uint64) bool {
 	f.freeze() // no Touch from here on
 	delete(s.m, k)
 	s.mu.Unlock()
+	t.left(1)
 	t.closed(k, f)
 	return true
 }
@@ -211,6 +260,7 @@ func (t *Table[K, V]) Sweep(now time.Time) int {
 		}
 		s.mu.Unlock()
 	}
+	t.left(len(victims))
 	for _, v := range victims {
 		t.closed(v.k, v.f)
 	}
@@ -218,7 +268,7 @@ func (t *Table[K, V]) Sweep(now time.Time) int {
 }
 
 // Run advances the table's coarse clock and evicts idle flows until ctx is
-// done, then closes every remaining flow. The clock resolution is a quarter
+// done, then closes the table (see Close). The clock resolution is a quarter
 // of IdleTimeout, clamped to [10ms, 1s].
 func (t *Table[K, V]) Run(ctx context.Context) error {
 	tick := time.Second
@@ -249,14 +299,21 @@ func (t *Table[K, V]) advance(ns int64) {
 	}
 }
 
-// Close removes and closes every flow.
+// Close removes and closes every flow and closes the table: afterwards
+// GetOrOpen creates nothing, so a reader still running after Close (or
+// after Run returned) cannot leave flows behind that nothing will sweep
+// or close. Get, Remove, Range and Len keep working on the empty table.
+// Close is idempotent; OnClose runs once for each flow it removes.
 func (t *Table[K, V]) Close() {
+	t.shut.Store(true)
 	for i := range t.shards {
 		s := &t.shards[i]
 		s.mu.Lock()
 		m := s.m
+		s.closed = true
 		s.m = make(map[K]*Flow[V])
 		s.mu.Unlock()
+		t.left(len(m))
 		for k, f := range m {
 			t.closed(k, f)
 		}
