@@ -25,6 +25,9 @@ var Default *Pool                            // behind the package-level functio
 func Get(size int) *Buf                      // = Default.Get
 func GetHeadroom(head, size int) *Buf        // = Default.GetHeadroom
 func Copy(data []byte) *Buf                  // = Default.Copy
+const BufferSize, UDPBufferSize = 32 << 10, 16 << 10 // sing's defaults
+func New() *Buf                              // = Default.Get(BufferSize)
+func NewPacket() *Buf                        // = Default.Get(UDPBufferSize)
 func (*Pool) Get(size int) *Buf              // empty, Cap == size; never nil
 func (*Pool) GetHeadroom(head, size int) *Buf // empty, head bytes in front for ExtendHeader
 func (*Pool) Copy(data []byte) *Buf          // borrowed → owned
@@ -100,8 +103,13 @@ Where go-netx differs:
   when it reaches zero, so a missed call leaks. Shared immutable data uses
   `stream.Writer.AddShared`; real shared ownership waits for a case that
   needs it, and would release on the last `Release`.
-- *No fixed buffer sizes or build tags* (`BufferSize`, `UDPBufferSize`,
-  `with_low_memory`): sizes are the application's choice.
+- *Default sizes as in sing, without the build tag (D-27).* `BufferSize`
+  (32KB) and `UDPBufferSize` (16KB) with `New` and `NewPacket` give code
+  that copies between connections, as a proxy does, sing's sizes without
+  choosing one. They are defaults for the caller, not for go-netx: no
+  package uses them, and `stream.Reader` keeps its 512B idle buffer and
+  64KB `Max`. sing's `with_low_memory` tag (16KB / 8KB) is left out: a
+  program that wants smaller buffers calls `Get` with its size.
 - *Debug builds* check ownership (below); sing's `Leak` only panics when
   called.
 
@@ -181,11 +189,12 @@ the payload (`BenchmarkHeaderPath`).
 ## 7. Decisions
 
 D-21 (power-of-two classes), D-24 (no memory limit in buf; supersedes
-D-05), D-25 (no reference counting), D-26 (largest pooled class 64KB).
+D-05), D-25 (no reference counting), D-26 (largest pooled class 64KB), D-27
+(sing's default sizes as constants, not used inside go-netx).
 
 ## 8. Testing
 
-BUF-01…BUF-25, NF-11 (fuzz against a slice model of every cursor
+BUF-01…BUF-26, NF-11 (fuzz against a slice model of every cursor
 operation) in [docs/TESTING.md](../TESTING.md).
 
 ## 9. Open items

@@ -12,6 +12,9 @@
   trailers without copying the payload. `As`/`With` wrap memory buf does
   not own. `buf.Default` with package-level `Get`, `GetHeadroom` and
   `Copy`. Get + Release still allocates nothing.
+- buf: sing's default sizes `BufferSize` (32KB) and `UDPBufferSize` (16KB)
+  with `New()` and `NewPacket()` (D-27). go-netx itself does not use them;
+  `stream.Reader` keeps its 512B idle buffer.
 - buf: batch helpers after sing's `multi.go`: `LenMulti`, `IsEmptyMulti`,
   `ToSliceMulti`, `CopyMulti`, `ReleaseMulti`.
 
