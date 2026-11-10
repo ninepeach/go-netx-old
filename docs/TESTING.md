@@ -143,6 +143,8 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | TCP-25 | P1 | IPv6 按前缀归组（默认 /64），IPv4 按单个地址，IPv4 映射地址按 IPv4 处理 | ✅ | `tcp.IPKeyGrouping` |  |
 | TCP-26 | P2 | 远端地址不是 TCP 地址的连接（自定义 listener）不做按 IP 限制 | ✅ | `tcp.PerIPSkipsNonTCPAddresses` |  |
 | TCP-27 | P1 | `MaxConnsPerIP` 为负数、`IPv6PrefixBits` 超出 0～128 时 Listen/NewServer 返回错误 | ✅ | `tcp.PerIPOptionValidation` |  |
+| TCP-28 | P1 | `tcp6` 监听 `[::1]`：收发正常，两端地址都是 IPv6；Socket 选项（收发缓冲区、KeepAlive）在 IPv6 监听上生效；`MaxConnsPerIP` 对 `::1` 按 /64 计数并拒绝超额连接 | ⚠️ | `tcp.IPv6Loopback` | 开发环境没有 IPv6 会跳过；由 CI（`NETX_REQUIRE_IPV6=1`，缺 IPv6 直接失败）实际运行，CI 首次通过后改为 ✅ |
+| TCP-29 | P1 | 双栈监听 `[::]` 同时接受 IPv4 与 IPv6 客户端；IPv4 映射地址按 IPv4 计入 `MaxConnsPerIP`，不占 IPv6 客户端的额度 | ⚠️ | `tcp.DualStackAcceptsIPv4` | 同上 |
 
 ### 3.3 Dialer
 
@@ -165,7 +167,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 |---|---|---|---|---|---|
 | UDP-01 | P0 | Listen 后能正常收发 | ✅ | `udp.Echo` |  |
 | UDP-02 | P0 | 开启 ReusePort 且 Readers 大于 1 时，包会分散到不同读循环 | ✅ | `udp.ReusePortReaders` | 仅 Linux |
-| UDP-03 | P0 | 收到的数据和来源地址正确，IPv4 映射地址已还原 | ✅ | `udp.FromAddressIsSenderAndUnmapped` | 需要双栈 socket，不支持时跳过 |
+| UDP-03 | P0 | 收到的数据和来源地址正确，IPv4 映射地址已还原；同一双栈 socket 上的 IPv6 发送方报告为 IPv6，回复可达 | ✅ | `udp.FromAddressIsSenderAndUnmapped` | 无 IPv6 回环时跳过（否则 Go 会把 `[::]` 静默开成 IPv4 socket，测试形同虚设）；CI 设置 `NETX_REQUIRE_IPV6=1` |
 | UDP-04 | P0 | 零长度数据报能正常交给 handler | ✅ | `udp.ZeroLengthDatagram` |  |
 | UDP-05 | P0 | 恰好 `MaxPacket` 字节的包能收到 | ✅ | `udp.DefaultMaxDatagram` |  |
 | UDP-06 | P1 | 超过 `MaxPacket` 的包被丢弃并计入 Truncated（Linux 靠 MSG_TRUNC 标志，Windows 靠 WSAEMSGSIZE 错误） | ✅ | `udp.DefaultMaxDatagram`<br>`udp.TruncatedDropped` |  |
@@ -194,7 +196,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | UDP-17 | P0 | `Reply` 回包内容正确 | ✅ | `udp.Echo` |  |
 | UDP-18 | P0 | 超过 `MaxDatagram` 时返回 `ErrTooLarge`；较小的 `MaxPacket` 不限制发送 | ✅ | `udp.WriteTooLarge` |  |
 | UDP-19 | P1 | IPv4 下 65000 字节能发出（低于 IPv4 理论上限 65507） | ✅ | `udp.DefaultMaxDatagram`<br>`udp.IPv4MaxDatagramRoundTrip` |  |
-| UDP-20 | P1 | IPv6 下的发送边界 | ⚠️ | `udp.IPv6MaxDatagramRoundTrip` | 测试已写好，但当前开发环境没有 IPv6，会被跳过，尚未实际运行 |
+| UDP-20 | P1 | IPv6 下的发送边界 | ⚠️ | `udp.IPv6MaxDatagramRoundTrip` | 开发环境没有 IPv6 会跳过；由 CI（`NETX_REQUIRE_IPV6=1`）实际运行，CI 首次通过后改为 ✅ |
 | UDP-21 | P1 | `Reply(nil)` 返回 `ErrNilPacket` | ✅ | `udp.ReplyValidatesPacket` |  |
 | UDP-22 | P1 | Reader 为负数或越界时回退到按端口选 socket，不 panic | ✅ | `udp.ReplyValidatesPacket` |  |
 | UDP-23 | P1 | 并发调用 WriteTo、Reply，同时 Close | ✅ | `udp.ConcurrentWritesAndClose` |  |

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"os"
 	"runtime"
 	"sync"
 	"testing"
@@ -355,8 +356,24 @@ func TestZeroLengthDatagram(t *testing.T) {
 	}
 }
 
+// need6 skips when the host has no IPv6 loopback, or fails when CI sets
+// NETX_REQUIRE_IPV6=1. Without IPv6 Go silently opens "[::]" as an IPv4
+// socket, so a dual-stack test would pass without testing anything.
+func need6(t *testing.T) {
+	t.Helper()
+	c, err := net.ListenPacket("udp6", "[::1]:0")
+	if err != nil {
+		if os.Getenv("NETX_REQUIRE_IPV6") != "" {
+			t.Fatal("IPv6 required (NETX_REQUIRE_IPV6) but there is no IPv6 loopback:", err)
+		}
+		t.Skip("no IPv6 loopback on this host:", err)
+	}
+	c.Close()
+}
+
 // Checks: UDP-03
 func TestFromAddressIsSenderAndUnmapped(t *testing.T) {
+	need6(t)
 	from := make(chan netip.AddrPort, 1)
 	c, err := udp.Listen(context.Background(), "udp", "[::]:0", func(c *udp.Conn, p *udp.Packet) {
 		from <- p.From
@@ -383,6 +400,21 @@ func TestFromAddressIsSenderAndUnmapped(t *testing.T) {
 	if _, err := cl.Read(make([]byte, 8)); err != nil {
 		t.Fatal("no reply to IPv4 sender:", err)
 	}
+	// A real IPv6 sender on the same socket is reported as IPv6 and replied to.
+	cl6, err := net.DialUDP("udp6", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(netip.IPv6Loopback(), c.LocalAddr().Port())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl6.Close()
+	cl6.SetDeadline(time.Now().Add(2 * time.Second))
+	cl6.Write([]byte("y"))
+	got = <-from
+	if want := cl6.LocalAddr().(*net.UDPAddr).AddrPort(); got != want || !got.Addr().Is6() || got.Addr().Is4In6() {
+		t.Fatalf("From=%v, want %v", got, want)
+	}
+	if _, err := cl6.Read(make([]byte, 8)); err != nil {
+		t.Fatal("no reply to IPv6 sender:", err)
+	}
 }
 
 // Checks: UDP-19
@@ -402,10 +434,11 @@ func TestIPv4MaxDatagramRoundTrip(t *testing.T) {
 
 // Checks: UDP-20
 func TestIPv6MaxDatagramRoundTrip(t *testing.T) {
+	need6(t)
 	got := make(chan int, 1)
 	c, err := udp.Listen(context.Background(), "udp6", "[::1]:0", func(_ *udp.Conn, p *udp.Packet) { got <- len(p.Data) }, udp.Options{})
 	if err != nil {
-		t.Skip("no IPv6 loopback:", err)
+		t.Fatal(err)
 	}
 	go c.Serve(context.Background())
 	t.Cleanup(func() { c.Close() })
