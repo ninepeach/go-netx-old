@@ -62,7 +62,7 @@ func TestReplyValidatesPacket(t *testing.T) {
 
 - **压测**放在带 `//go:build stress` 标签的 `stress_test.go` 文件中，函数名以 `TestStress` 开头，通过 `make stress` 运行。压测结束时，必须用 `internal/leak` 检查 goroutine 和文件描述符是否回到基线。需要持续一段时间的压测，时长要能用 `NETX_STRESS_SECONDS` 调整。
 - **Fuzz** 必须对照一个简单的模型检查不变量，而不是只检查“不会 panic”。种子语料用 `f.Add` 提供，平时随 `go test` 一起运行；修改相关代码后，用 `make fuzz` 做长时间的 fuzz。Fuzz 的输入不得把数据发到回环地址以外的地方。
-- **Benchmark** 要用 `b.ReportAllocs()`。文档和注释里的性能数字必须来自实测，并写明测试环境（例如 2 vCPU），禁止估算。
+- **Benchmark** 要用 `b.ReportAllocs()`。文档和注释里的性能数字必须来自实测，并写明测试环境（例如 2 vCPU），禁止估算。网关规模的基线（空闲连接内存、请求/响应延迟、慢客户端）用 `make baseline` 测，结果记在 docs/PERFORMANCE.md；改动影响这些数字时同一个 PR 里重测并更新。
 - 第 1 节的 `make verify` 会编译检查 `stress` 标签下的代码，但不会运行压测；合并前和发布前要另外运行 `make stress`。
 
 ### 2.5 禁止的做法
@@ -115,7 +115,7 @@ TESTING.md 的“测试”一栏由工具根据代码中的 `Checks:` 声明自�
 ## 5. 代码改动
 
 - 包结构、依赖方向、所有权规则以 ARCHITECTURE.md 为准，那里列出的冻结规则同样适用。
-- **`ninepeach/go-netx` 是设计文档唯一的事实来源。** 总体设计在 ARCHITECTURE.md，每个包的设计在 `docs/design/<包名>.md`，测试与设计决定在 docs/TESTING.md。其他地方的副本（claude.ai Project、旧的设计归档等）只是镜像，不以其为准，也不在那里修改设计。
+- **`ninepeach/go-netx` 是设计文档唯一的事实来源。** 总体设计在 ARCHITECTURE.md，每个包的设计在 `docs/design/<包名>.md`，测试与设计决定在 docs/TESTING.md，实测基线和调优指南在 docs/PERFORMANCE.md。其他地方的副本（claude.ai Project、旧的设计归档等）只是镜像，不以其为准，也不在那里修改设计。
 - **设计文档必须和代码同步**：总体设计在 ARCHITECTURE.md，每个包的设计在 `docs/design/<包名>.md`（根包对应 runtime.md，internal 下的子包在 internal.md 中各占一节）。改动包的职责、API、内部机制或性能数字时，必须在同一个 PR 里更新对应的设计文档。新增包时同时新增设计文档，缺少设计文档会导致 `go test` 失败（DOC-02）。
 - 设计文档统一采用以下章节：职责与边界、API、核心设计、并发与生命周期、所有权与资源、可观测性、平台差异、实测性能、设计决定、测试对应的检查点、待办事项。不适用的章节可以省略。
 - 新增公开 API 时，同一个 PR 里必须在 TESTING.md 中为它新增检查点，并更新 CHANGELOG.md。

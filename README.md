@@ -104,12 +104,35 @@ Every component has `Stats()` returning a snapshot (`udp.Stats.KernelDrops`,
 
 ## Performance
 
-UDP echo round trip on loopback (2 vCPU, Go 1.24, 512-byte payload):
+Measured on 2 vCPU, Linux, Go 1.24; details, method and tuning in
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md):
 
-| | ns/op | allocs/op |
-|---|---|---|
-| v0.2 | 32,500 | 5 |
-| v1.0 | 10,800 | 0 |
+| | |
+|---|---|
+| Idle TCP connection, server side (`stream.Reader`) | 5.9KB (bufio 4KB: 9.4KB) |
+| TCP request/response, 16 clients, 64B | 222k req/s, p99 191µs |
+| UDP echo round trip, 512B | 4.6µs, 0 allocs |
+| `buf` Get + Release | 6–10ns, 0 allocs |
+| `flow` lookup at 1M flows | 228ns, 0 allocs |
+
+## Typical compositions
+
+- **IM gateway (TCP, long-lived, mostly idle):** `tcp.Listen` with
+  `Admit` + `MaxConnsPerIP` + `KeepAlive`; `stream.Reader` with `Max` set to
+  the largest frame and `Reader.Shrink()` after large messages;
+  `stream.Writer` with a write deadline before each `Flush`; `buf.Pool`
+  with a `limit.Budget`.
+- **Game gateway (UDP sessions):** `udp.Listen` with `Readers` and
+  `ReusePort`; a `flow.Table` keyed by `netip.AddrPort` with `IdleTimeout`
+  and `MaxFlows`, `GetAndTouch` per packet and `GetOrOpen` for new
+  sessions; shared configuration sent over TCP with `Writer.AddShared`.
+- **Media relay (UDP, high packet rate):** `udp.Options.Batch` on Linux,
+  `MaxPacket` sized to the codec, a verified `RecvBuffer`,
+  `udp.Stats.KernelDrops` exported; a `queue.Ring` with `OnDrop:
+  (*buf.Buf).Release` between the reader and slower consumers.
+
+Ownership of buffers across all of them follows four rules (borrowed,
+owned, transfer, shared) in [ARCHITECTURE.md](ARCHITECTURE.md#ownership-rules).
 
 ## Examples
 
