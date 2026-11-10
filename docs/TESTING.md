@@ -352,6 +352,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | STREAM-08 | P2 | 大量空闲连接下，每个连接的缓冲区开销（压测中实测，并与固定 4KB 缓冲区对比） | ✅ | `stream.StressIdleReaderMemory` | 实测（4000 个空闲连接）：每个连接比固定 4KB 的 bufio.Reader 少约 3.6KB，比不用缓冲区多约 430 字节 |
 | STREAM-16 | P1 | 数据源连续多次返回 `(0, nil)` 时，`Peek`、`Fill`、`Read` 返回 `io.ErrNoProgress`，不空转 | ✅ | `stream.EmptyReadsDoNotSpin` |  |
 | STREAM-17 | P0 | 负数参数：`Peek(n<0)` 返回 `ErrNegativeCount`，`Discard(n<=0)` 返回 0；两者都不改变内部状态，之后的调用照常工作 | ✅ | `stream.NegativeCounts` | Fuzz 覆盖负数参数 |
+| STREAM-22 | P1 | `Shrink`：缓冲区为空且已升级时归还大缓冲区（预算归零）、回到 IdleSize 并返回 true；有数据缓冲、未升级、Release 之后都不做任何事并返回 false；之后照常读取；升级、读完、Shrink 循环零分配 | ✅ | `stream.ShrinkReturnsGrownBufferWhenEmpty` | Fuzz 覆盖 Shrink 不丢数据；零分配断言只在非 race 构建下生效 |
 
 ### 8.5.2 Writer
 

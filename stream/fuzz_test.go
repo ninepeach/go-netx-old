@@ -10,7 +10,7 @@ import (
 )
 
 // A random stream split into random chunks, consumed by a random sequence
-// of Peek/Discard/Read/Fill: the bytes handed out are exactly the stream,
+// of Peek/Discard/Read/Fill/Shrink: the bytes handed out are exactly the stream,
 // in order, and every borrowed buffer goes back to the pool.
 //
 // Checks: NF-20
@@ -45,7 +45,7 @@ func readerModel(t *testing.T, data, cuts, ops []byte) {
 	p := make([]byte, 200)
 	for i := 0; i+1 < len(ops); i += 2 {
 		arg := int(ops[i+1]) * 33
-		switch ops[i] % 6 {
+		switch ops[i] % 7 {
 		case 0: // Peek arg bytes and consume them
 			got, err := r.Peek(arg)
 			if err == nil && len(got) != arg {
@@ -74,6 +74,12 @@ func readerModel(t *testing.T, data, cuts, ops []byte) {
 			n := r.Len()
 			if got := r.Discard(-arg); got != 0 || r.Len() != n {
 				t.Fatalf("Discard(%d) = %d; Len %d -> %d", -arg, got, n, r.Len())
+			}
+		case 6: // Shrink never loses buffered data and frees only when empty
+			before := append([]byte(nil), r.Buffered()...)
+			shrunk := r.Shrink()
+			if !bytes.Equal(r.Buffered(), before) || (shrunk && (len(before) != 0 || budget.Used() != 0)) {
+				t.Fatalf("Shrink=%v with %d buffered, budget %d", shrunk, len(before), budget.Used())
 			}
 		}
 		if r.Len() > 8192 {

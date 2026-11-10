@@ -294,3 +294,51 @@ func TestNegativeCounts(t *testing.T) {
 		t.Fatal("Discard after negative calls")
 	}
 }
+
+// Checks: STREAM-22
+func TestShrinkReturnsGrownBufferWhenEmpty(t *testing.T) {
+	budget := limit.NewBudget(1 << 20)
+	big := seq(10000)
+	src := &chunks{parts: [][]byte{big, []byte("abcdef")}}
+	r := NewReader(src, buf.NewPool(budget), ReaderOptions{})
+	if r.Shrink() {
+		t.Fatal("Shrink on the idle buffer reported a change")
+	}
+	if _, err := r.Peek(10000); err != nil {
+		t.Fatal(err)
+	}
+	if r.Shrink() {
+		t.Fatal("Shrink with data buffered")
+	}
+	r.Discard(10000) // the read was large: Discard keeps the buffer
+	if r.big == nil || budget.Used() == 0 {
+		t.Fatal("expected the grown buffer to be kept after a heavy read")
+	}
+	if !r.Shrink() || r.big != nil || budget.Used() != 0 || len(r.data) != 512 {
+		t.Fatalf("Shrink: big=%v budget=%d len=%d", r.big != nil, budget.Used(), len(r.data))
+	}
+	if b, err := r.Peek(6); err != nil || string(b) != "abcdef" { // still works
+		t.Fatalf("after Shrink: %q %v", b, err)
+	}
+	r.Release()
+	if r.Shrink() {
+		t.Fatal("Shrink after Release")
+	}
+	// Steady state costs nothing: grow, drain, Shrink, repeat.
+	pool := buf.NewPool(nil)
+	loop := &chunks{}
+	r2 := NewReader(loop, pool, ReaderOptions{})
+	one := [][]byte{big}
+	if !raceEnabled {
+		allocs := testing.AllocsPerRun(100, func() {
+			one[0] = big
+			loop.parts = one
+			r2.Peek(len(big))
+			r2.Discard(len(big))
+			r2.Shrink()
+		})
+		if allocs != 0 {
+			t.Fatalf("grow/Shrink cycle allocates %.1f", allocs)
+		}
+	}
+}
