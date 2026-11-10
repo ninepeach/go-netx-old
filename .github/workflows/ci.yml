@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The required check: the same `make verify` contributors run before a
+  # push, plus stress, short fuzzing and the examples build.
+  linux:
+    name: linux (go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.24.x', 'stable']
+    env:
+      GOTOOLCHAIN: local
+      NETX_REQUIRE_IPV6: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - run: make verify
+      - run: make stress
+      - run: make fuzz FUZZTIME=10s
+      - run: make examples
+
+  # Real runs on the other platforms `make cross` only vets.
+  macos:
+    runs-on: macos-latest
+    env:
+      GOTOOLCHAIN: local
+      NETX_REQUIRE_IPV6: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+      - run: go test -timeout 3m ./...
+      - run: go test -race ./...
+      - run: go test -race -tags netxdebug ./...
+
+  windows:
+    runs-on: windows-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+      - run: go test -timeout 3m ./...

@@ -45,6 +45,9 @@
 - socket: `Supported()` reports which performance options the platform
   implements (`FastOpenListen`, `ReusePortBalanced`).
 - socket: TCP Fast Open on macOS listeners (`TCP_FASTOPEN`).
+- socket: `Listen(ctx, network, address, Options)` creates a TCP listener
+  and also applies options a platform accepts only on a listening socket
+  (Fast Open on macOS). `tcp.Listen` uses it.
 
 ### Changed
 
@@ -120,6 +123,12 @@
   forbids but some wrappers do). It used to return nil, so the caller
   believed a truncated or, through the per-buffer fallback, garbled
   stream had been sent.
+- socket: Fast Open on macOS is set after listen(2). macOS refuses
+  `TCP_FASTOPEN` with EINVAL before that, so any Listen with Fast Open
+  enabled failed on a Mac.
+- udp: on macOS `Listen` raises `SO_SNDBUF` to 64KB unless
+  `Socket.SendBuffer` is set. The default of 9216 bytes made every
+  datagram over 9216 bytes fail with EMSGSIZE.
 
 ### Migration
 

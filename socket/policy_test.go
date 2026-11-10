@@ -18,8 +18,7 @@ import (
 // Checks: SOCK-06
 func TestFastOpenConfigurationRunsEverywhere(t *testing.T) {
 	opts := socket.Options{FastOpen: socket.FastOpenOptions{Enabled: true, Backlog: 16}}
-	lc := socket.ListenConfig(opts)
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	ln, err := socket.Listen(context.Background(), "tcp", "127.0.0.1:0", opts)
 	if err != nil {
 		t.Fatalf("Listen with Fast Open on %s: %v", runtime.GOOS, err)
 	}

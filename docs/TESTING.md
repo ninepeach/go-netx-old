@@ -93,13 +93,13 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | SOCK-17 | P1 | tcp、udp 以外的网络类型（如 unix）设置了任何选项时返回 `UnsupportedOptionError`，不再静默忽略 | ✅ | `socket.OptionsOnOtherNetworksAreRefused` | unix socket 上验证（unix 平台） |
 | SOCK-18 | P1 | 在 UDP 上设置 FastOpen 或 KeepAlive（只适用于 TCP）时返回 `UnsupportedOptionError`，Listen 和 Dialer 都一样；始终显式报错 | ✅ | `socket.TCPOnlyOptionsOnUDPAreRefused` |  |
 | SOCK-19 | P1 | 不设置任何选项时，任何网络类型都能正常工作 | ✅ | `socket.ZeroOptionsWorkOnAnyNetwork` |  |
-| SOCK-20 | P1 | macOS：ReusePort 设置 `SO_REUSEPORT`，同一端口可以绑定第二个 socket（不分流） | ⚠️ | `socket.ReusePortOnBSD` | 测试已写好，只在 macOS 上运行；当前开发环境只做了编译验证 |
+| SOCK-20 | P1 | macOS：ReusePort 设置 `SO_REUSEPORT`，同一端口可以绑定第二个 socket（不分流） | ✅ | `socket.ReusePortOnBSD` | 只在 macOS 上运行，由 CI 覆盖 |
 | SOCK-21 | P2 | FreeBSD：ReusePort 使用分流的 `SO_REUSEPORT_LB` | ⚠️ | `socket.ReusePortOnBSD` | 测试已写好，只在 FreeBSD 上运行；当前开发环境只做了编译验证 |
 | SOCK-22 | P0 | RecvBuffer/SendBuffer 设置后读回实际值，小于请求值时返回 `BufferSizeError`（Option、Requested、Actual 正确，Linux 读数减半），不是 `UnsupportedOptionError` | ✅ | `socket.EnsureBufferReportsShortSize` | 用模拟内核测试同一段逻辑，所有平台运行 |
 | SOCK-23 | P1 | 不足时（仅 Linux）用 FORCE 选项重试一次，FORCE 自身的错误被忽略，以重试后读回的值为准；足够时不重试；setsockopt、getsockopt 的错误原样返回 | ✅ | `socket.EnsureBufferTriesForceOnce` | 所有平台运行 |
 | SOCK-24 | P0 | Linux 真实内核：请求值不超过 rmem_max/wmem_max 时成功；超过时，有 CAP_NET_ADMIN 则拿到完整大小，没有则返回 `BufferSizeError`，Actual 等于上限 | ✅ | `socket.BufferCapOnLinux` | 运行时检测权限，分别断言两种结果；已用 root 和 `setpriv --bounding-set -net_admin` 各跑一次 |
 | SOCK-25 | P1 | `SetBuffers` 作用于已有连接时同样校验 | ✅ | `socket.BufferCapOnLinux` | 仅 Linux |
-| SOCK-26 | P1 | macOS：内核开启服务端 Fast Open（`net.inet.tcp.fastopen` 含 2）时监听 socket 上 `TCP_FASTOPEN` 生效；关闭时监听照常工作 | ⚠️ | `socket.FastOpenOnDarwin` | 测试已写好，只在 macOS 上运行；当前开发环境只做了编译验证 |
+| SOCK-26 | P1 | macOS：内核开启服务端 Fast Open（`net.inet.tcp.fastopen` 含 2）时，`socket.Listen` 在 listen 之后设置 `TCP_FASTOPEN` 并生效；只用 `ListenConfig` 时不带 Fast Open 监听、不报错；内核关闭时监听照常工作 | ✅ | `socket.FastOpenOnDarwin` | 只在 macOS 上运行，由 CI（macOS 26，`net.inet.tcp.fastopen=3`）覆盖 |
 | SOCK-27 | P1 | `socket.Supported()` 如实报告当前平台实现了哪些性能选项（Linux、macOS、FreeBSD、其他） | ✅ | `socket.SupportedMatchesPlatform` | 所有平台运行 |
 | SOCK-28 | P0 | `socket.Dialer` 设置了 FastOpen 时拨号报 `UnsupportedOptionError`：拨出方向的 FastOpen 会让已关闭的对端看起来连接成功（D-19） | ✅ | `socket.DialerRefusesFastOpen` |  |
 | SOCK-29 | P0 | `socket.Dialer` 保留调用方的 `Control` 和 `ControlContext`，先执行调用方的，再应用 go-netx 的选项；base 设置了 `ControlContext` 时选项照样生效 | ✅ | `socket.DialerKeepsCallerControl` |  |
@@ -143,6 +143,8 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | TCP-25 | P1 | IPv6 按前缀归组（默认 /64），IPv4 按单个地址，IPv4 映射地址按 IPv4 处理 | ✅ | `tcp.IPKeyGrouping` |  |
 | TCP-26 | P2 | 远端地址不是 TCP 地址的连接（自定义 listener）不做按 IP 限制 | ✅ | `tcp.PerIPSkipsNonTCPAddresses` |  |
 | TCP-27 | P1 | `MaxConnsPerIP` 为负数、`IPv6PrefixBits` 超出 0～128 时 Listen/NewServer 返回错误 | ✅ | `tcp.PerIPOptionValidation` |  |
+| TCP-28 | P1 | `tcp6` 监听 `[::1]`：收发正常，两端地址都是 IPv6；Socket 选项（收发缓冲区、KeepAlive）在 IPv6 监听上生效；`MaxConnsPerIP` 对 `::1` 按 /64 计数并拒绝超额连接 | ✅ | `tcp.IPv6Loopback` | 无 IPv6 回环时跳过；CI 在 Linux 和 macOS 上设置 `NETX_REQUIRE_IPV6=1` 实际运行 |
+| TCP-29 | P1 | 双栈监听 `[::]` 同时接受 IPv4 与 IPv6 客户端；IPv4 映射地址按 IPv4 计入 `MaxConnsPerIP`，不占 IPv6 客户端的额度 | ✅ | `tcp.DualStackAcceptsIPv4` | 同上 |
 
 ### 3.3 Dialer
 
@@ -151,7 +153,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | DIAL-01 | P0 | 正常连接 | ✅ | `tcp.Dialer` |  |
 | DIAL-02 | P0 | 连接失败时返回错误，并触发 `OnDial` | ✅ | `tcp.DialEventFailure` |  |
 | DIAL-03 | P0 | ctx 取消后拨号及时结束 | ✅ | `tcp.DialContextCancelled` |  |
-| DIAL-04 | P0 | 超时设置生效 | ✅ | `tcp.DialTimeout` |  |
+| DIAL-04 | P0 | 超时设置生效 | ✅ | `tcp.DialTimeout` | Windows 上回环连接可能在 1ns 超时被察觉前完成（CI 实测），此时跳过；由 Linux 和 macOS 覆盖 |
 | DIAL-05 | P1 | 成功时 `DialEvent` 带有本地和远端地址 | ✅ | `tcp.DialEventSuccess` |  |
 | DIAL-06 | P1 | socket 选项作用于拨出的连接 | ✅ | `tcp.DialerAppliesSocketOptions` | 仅 Linux |
 | DIAL-07 | P1 | 回调出错时的处理 | ➖ |  | `OnDial` 没有返回值，只做观测 |
@@ -165,8 +167,8 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 |---|---|---|---|---|---|
 | UDP-01 | P0 | Listen 后能正常收发 | ✅ | `udp.Echo` |  |
 | UDP-02 | P0 | 开启 ReusePort 且 Readers 大于 1 时，包会分散到不同读循环 | ✅ | `udp.ReusePortReaders` | 仅 Linux |
-| UDP-03 | P0 | 收到的数据和来源地址正确，IPv4 映射地址已还原 | ✅ | `udp.FromAddressIsSenderAndUnmapped` | 需要双栈 socket，不支持时跳过 |
-| UDP-04 | P0 | 零长度数据报能正常交给 handler | ✅ | `udp.ZeroLengthDatagram` |  |
+| UDP-03 | P0 | 收到的数据和来源地址正确，IPv4 映射地址已还原；同一双栈 socket 上的 IPv6 发送方报告为 IPv6，回复可达 | ✅ | `udp.FromAddressIsSenderAndUnmapped` | 无 IPv6 回环时跳过（否则 Go 会把 `[::]` 静默开成 IPv4 socket，测试形同虚设）；CI 设置 `NETX_REQUIRE_IPV6=1` |
+| UDP-04 | P0 | 零长度数据报能正常交给 handler | ✅ | `udp.ZeroLengthDatagram` | 客户端用未连接的 socket 和 WriteTo 发送：Windows 上 Go 的已连接 `Write(nil)` 不发出任何数据（CI 实测），这是 Go 标准库客户端的行为，go-netx 收发零长度数据报在 Windows 上正常 |
 | UDP-05 | P0 | 恰好 `MaxPacket` 字节的包能收到 | ✅ | `udp.DefaultMaxDatagram` |  |
 | UDP-06 | P1 | 超过 `MaxPacket` 的包被丢弃并计入 Truncated（Linux 靠 MSG_TRUNC 标志，Windows 靠 WSAEMSGSIZE 错误） | ✅ | `udp.DefaultMaxDatagram`<br>`udp.TruncatedDropped` |  |
 | UDP-07 | P1 | 多个读循环并发运行没有数据竞争 | ✅ | `udp.ConcurrentWritesAndClose`<br>`udp.ReusePortReaders` | 在 -race 下运行 |
@@ -193,8 +195,8 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | UDP-16 | P0 | `WriteTo` 发送内容正确 | ✅ | `udp.ReplyValidatesPacket` | 经由 Reply 的回退路径 |
 | UDP-17 | P0 | `Reply` 回包内容正确 | ✅ | `udp.Echo` |  |
 | UDP-18 | P0 | 超过 `MaxDatagram` 时返回 `ErrTooLarge`；较小的 `MaxPacket` 不限制发送 | ✅ | `udp.WriteTooLarge` |  |
-| UDP-19 | P1 | IPv4 下 65000 字节能发出（低于 IPv4 理论上限 65507） | ✅ | `udp.DefaultMaxDatagram`<br>`udp.IPv4MaxDatagramRoundTrip` |  |
-| UDP-20 | P1 | IPv6 下的发送边界 | ⚠️ | `udp.IPv6MaxDatagramRoundTrip` | 测试已写好，但当前开发环境没有 IPv6，会被跳过，尚未实际运行 |
+| UDP-19 | P1 | IPv4 下 65000 字节能发出（低于 IPv4 理论上限 65507）；macOS 上同样能发出（默认发送缓冲区 9216 字节，Listen 会调高） | ✅ | `udp.DefaultMaxDatagram`<br>`udp.IPv4MaxDatagramRoundTrip` | macOS 部分由 CI 运行 |
+| UDP-20 | P1 | IPv6 下的发送边界 | ✅ | `udp.IPv6MaxDatagramRoundTrip` | 无 IPv6 回环时跳过；CI 在 Linux 和 macOS 上实际运行 |
 | UDP-21 | P1 | `Reply(nil)` 返回 `ErrNilPacket` | ✅ | `udp.ReplyValidatesPacket` |  |
 | UDP-22 | P1 | Reader 为负数或越界时回退到按端口选 socket，不 panic | ✅ | `udp.ReplyValidatesPacket` |  |
 | UDP-23 | P1 | 并发调用 WriteTo、Reply，同时 Close | ✅ | `udp.ConcurrentWritesAndClose` |  |
@@ -453,6 +455,8 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | REG-28 | flow | 调用方先 `Flow.Close()`，flow 再离开表时 `OnClose` 不会调用，违反“每个离开表的 flow 恰好一次” | FLOW-17 | ✅ |
 | REG-29 | flow | `GetOrOpen` 的 newValue 或 `Range` 的 fn panic 后分片锁不释放，之后访问该分片永久阻塞 | FLOW-18、FLOW-19 | ✅ |
 | REG-30 | stream | 目标少写且返回 nil 时 `Flush` 返回 nil 并释放缓冲区，调用方以为已发完；逐个 Write 路径上每个缓冲区只写出前一段，接收方拿到拼接错乱的流（实测 "abcd"、"efgh"、"ijkl" 写成 "abefij"） | STREAM-21 | ✅ |
+| REG-31 | socket | macOS 在 listen 之前设置 `TCP_FASTOPEN` 返回 EINVAL，开启 FastOpen 的 Listen 直接失败（CI 在 macOS 26 上实测；PR #15 起一直存在，此前没有 macOS 实机运行） | SOCK-06、SOCK-26 | ✅ |
+| REG-32 | udp | macOS 默认 `SO_SNDBUF` 为 9216 字节，超过它的数据报 `WriteTo` 返回 EMSGSIZE，`MaxDatagram` 的约定在 Mac 上不成立（CI 实测） | UDP-19、UDP-20 | ✅ |
 
 ### 设计决定
 

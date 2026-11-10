@@ -18,6 +18,7 @@
 | 交叉编译 | `make cross` | 对 linux/amd64、linux/386、darwin/arm64、windows/amd64、freebsd/amd64、js/wasm 执行 `go vet`，包括 `stress` 标签下的代码 |
 
 - 禁止推送没有通过 `make verify` 的提交，包括“只改了测试”的提交。
+- CI（`.github/workflows/ci.yml`）在每个 PR 和 main 上重跑：Linux 上 Go 1.24 与最新稳定版各跑一遍 `make verify`、`make stress`、`make fuzz FUZZTIME=10s` 和 `make examples`；macOS 上跑 `go test`、`-race` 和 `-race -tags netxdebug`；Windows 上跑 `go test`。CI 设置 `NETX_REQUIRE_IPV6=1`，IPv6 测试在 CI 上不允许跳过。CI 不能代替本地的 `make verify`。
 - 只在某个平台上运行的测试（比如只在 macOS 运行），如果本地没有那个平台，至少要保证 `make cross` 能编译通过，并在 PR 描述中写明“未在该平台上实际运行”。
 - 合并前和发布前还必须运行 `make stress`；改动了解析、queue、flow、buf 的代码时，还要运行 `make fuzz`。
 - 新增或修改了并发相关的测试，应当再单独连续运行 20 次，确认不会偶发失败：

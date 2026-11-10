@@ -111,8 +111,7 @@ type Server struct {
 
 // Listen binds network ("tcp", "tcp4", "tcp6") at address.
 func Listen(ctx context.Context, network, address string, h Handler, o Options) (*Server, error) {
-	lc := socket.ListenConfig(o.Socket)
-	ln, err := lc.Listen(ctx, network, address)
+	ln, err := socket.Listen(ctx, network, address, o.Socket)
 	if err != nil {
 		return nil, err
 	}
