@@ -12,6 +12,8 @@
   trailers without copying the payload. `As`/`With` wrap memory buf does
   not own. `buf.Default` with package-level `Get`, `GetHeadroom` and
   `Copy`. Get + Release still allocates nothing.
+- buf: batch helpers after sing's `multi.go`: `LenMulti`, `IsEmptyMulti`,
+  `ToSliceMulti`, `CopyMulti`, `ReleaseMulti`.
 
 - socket: `CheckDialer(Options)` returns, without dialing, the error every
   dial with these options would return (Fast Open on a dialer, D-19).

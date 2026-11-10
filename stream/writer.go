@@ -92,10 +92,7 @@ func (w *Writer) Flush() (int64, error) {
 // Discard drops everything queued without writing it, releasing the owned
 // buffers; shared data is only forgotten.
 func (w *Writer) Discard() {
-	for i, b := range w.held {
-		b.Release()
-		w.held[i] = nil
-	}
+	buf.ReleaseMulti(w.held)
 	w.held = w.held[:0]
 	clear(w.vec) // drop references to released and shared memory
 	w.vec = w.vec[:0]

@@ -349,6 +349,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | BUF-20 | P0 | 写入与读取：`Write`/`WriteString`/`WriteByte` 写满后返回 `io.ErrShortBuffer`；`ReadOnceFrom` 满时不读；`ReadFullFrom` 超过空闲空间时不读、短读保留已读数据并返回 `io.ErrUnexpectedEOF`；`WriteTo` 不消费数据；`FreeBytes` + `Extend` 直接读入 | ✅ | `buf.WriteAndReadMethods` |  |
 | BUF-21 | P1 | `ReadPacketFrom` 读一个数据报到空闲空间并返回来源地址，满时返回 `io.ErrShortBuffer` | ✅ | `buf.ReadPacketFrom` |  |
 | BUF-22 | P1 | `As`/`With` 包装调用方的内存：不进池、不计入 `Outstanding`，Release 只是丢弃引用、可重复调用、不改调用方内存；`With` 写入调用方内存 | ✅ | `buf.UnmanagedWrappers` |  |
+| BUF-23 | P1 | 批量辅助函数：`LenMulti`/`IsEmptyMulti` 只计数据；`ToSliceMulti` 按顺序别名每个缓冲区，可作 `net.Buffers` 写出；`CopyMulti` 在 `len(dst)` 处停止；`ReleaseMulti` 每个缓冲区只释放一次、清空切片、跳过 nil | ✅ | `buf.Multi` |  |
 
 ## 8.5 stream：流式读写
 

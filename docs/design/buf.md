@@ -48,10 +48,20 @@ func (*Buf) ReadFullFrom(io.Reader, n int) (int, error)
 func (*Buf) ReadPacketFrom(net.PacketConn) (int, net.Addr, error)
 func (*Buf) WriteTo(io.Writer) (int64, error)
 func (*Buf) Release()                        // nil-safe; unmanaged: only forgets
+
+func LenMulti([]*Buf) int; IsEmptyMulti([]*Buf) bool
+func ToSliceMulti([]*Buf) [][]byte           // aliases; net.Buffers for writev
+func CopyMulti(dst []byte, bufs []*Buf) int
+func ReleaseMulti([]*Buf)                    // releases each once, clears the slice
 const Debug bool                             // true with -tags netxdebug
 const Poison = 0xDB                          // debug builds fill released buffers with it
 func Outstanding() int64                     // debug builds
 ```
+
+Files, as in sing: `alloc.go` (size classes, `Capacity`), `pool.go`
+(`Pool`, `Default`, `Get`, `GetHeadroom`, `Copy`, `As`, `With`),
+`buffer.go` (`Buf` and its methods), `multi.go` (the `*Multi` helpers),
+`debug.go`/`nodebug.go` (ownership checks).
 
 ## 3. Ownership rules
 
@@ -164,7 +174,7 @@ D-05), D-25 (no reference counting), D-26 (largest pooled class 64KB).
 
 ## 8. Testing
 
-BUF-01…BUF-22, NF-11 (fuzz against a slice model of every cursor
+BUF-01…BUF-23, NF-11 (fuzz against a slice model of every cursor
 operation) in [docs/TESTING.md](../TESTING.md).
 
 ## 9. Open items
