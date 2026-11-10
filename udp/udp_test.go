@@ -72,7 +72,7 @@ func TestEcho(t *testing.T) {
 // Checks: UDP-02, UDP-07
 func TestReusePortReaders(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("SO_REUSEPORT is Linux-only in socket")
+		t.Skip("load spreading is asserted on Linux only: macOS binds but does not balance (D-15), and FreeBSD's SO_REUSEPORT_LB is not run here")
 	}
 	var mu sync.Mutex
 	seen := map[int]bool{}

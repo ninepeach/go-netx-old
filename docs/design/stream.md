@@ -89,6 +89,9 @@ together. `Flush`:
 
 Every buffer from `Add` is released after `Flush`, whether the write
 succeeded or not: after a failed or partial write the stream is broken.
+`Flush` writes every queued byte or returns an error: a destination that
+reports fewer bytes with a nil error gets `io.ErrShortWrite`, as `bufio`
+does, so a broken wrapper cannot pass off a truncated stream as sent.
 Shared slices are never released; the caller must not change them until
 `Flush` or `Discard` returns, after which the Writer keeps no reference.
 The vector slices are reused and cleared, so steady-state `Add`+`Flush`

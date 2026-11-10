@@ -61,7 +61,9 @@ func (w *Writer) Pending() (buffers, bytes int) { return len(w.vec), w.size }
 
 // Flush writes everything queued in order, then releases the owned
 // buffers. A single buffer is written with Write (writev only pays off for
-// several).
+// several). Flush either writes every queued byte or returns an error: a
+// destination that reports fewer bytes with a nil error, which io.Writer
+// forbids but some wrappers do, yields io.ErrShortWrite.
 func (w *Writer) Flush() (int64, error) {
 	var n int64
 	var err error
@@ -79,6 +81,9 @@ func (w *Writer) Flush() (int64, error) {
 		} else {
 			n, err = w.tmp.WriteTo(w.dst)
 		}
+	}
+	if err == nil && n < int64(w.size) {
+		err = io.ErrShortWrite
 	}
 	w.Discard()
 	return n, err
