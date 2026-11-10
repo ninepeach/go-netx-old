@@ -78,3 +78,7 @@ QUEUE-01…QUEUE-17, NF-06 (stress), NF-10 (fuzz) in
 
 None. A lock-free SPSC variant is not planned until a benchmark shows the
 mutex matters.
+
+## Cross-repository target-design alignment (2026-11-10)
+
+The [canonical target design](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/design.md) and [phased implementation plan](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/implementation-steps.zh.md) describe additional planned abstractions and acceptance criteria. This document specifies the **current module contract**. The bounded generic Ring is not the canonical plan's per-Flow CloseableBoundedWriterQueue; writer waiter caps, WriteItem ownership and drain semantics require separate decisions. Do not treat target APIs as implemented or change this module's boundaries without an explicit cross-repository design decision.
