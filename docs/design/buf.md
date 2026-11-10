@@ -53,7 +53,9 @@ earlier three classes (2KB, 16KB, 64KB) wasted up to 8×: a 3KB IM message
 held 16KB and a 50B game packet 2KB; now they hold 4KB and 64B. More
 classes cost nothing measurable: each class is its own per-P pool, and Get
 + Release stayed at about 9ns. 64B is the floor because smaller buffers
-save little next to the `Buf` header; 128KB is the largest pooled buffer; UDP datagram limits are independent.
+save little next to the `Buf` header. 128KB is the largest pooled
+buffer (raised from 64KB in #35); `udp.MaxDatagram` and the default
+`stream.ReaderOptions.Max` (64KB) are separate limits and did not change.
 Requests above `Large` are allocated directly and not pooled, but still
 budgeted. `Capacity(n)` exposes the rounding so callers can plan budgets
 and `stream.Reader` can grow class by class.
@@ -89,10 +91,11 @@ both.
 
 ## 6. Performance (2 vCPU)
 
-Get + Release about 9ns at every pooled size from 64B to 128KB, 0
-allocations, the same as the three-class version measured in the same
-run (`BenchmarkGetReleaseBySize`, medians of 6). Unpooled (70KB) about
-11µs and 2 allocations, unchanged.
+Get + Release about 6–7ns at every pooled size from 64B to 128KB (70KB
+now lands in the 128KB class), 0 allocations; unpooled (140KB) about 24µs
+and 2 allocations (`BenchmarkGetReleaseBySize`, medians of 6, 2026-11-11).
+The three-class version measured about 9ns in an earlier run on the same
+VM.
 
 | request | capacity before | capacity now |
 |---|---|---|
@@ -102,6 +105,7 @@ run (`BenchmarkGetReleaseBySize`, medians of 6). Unpooled (70KB) about
 | 3000B | 16KB | 4KB |
 | 9000B | 16KB | 16KB |
 | 40000B | 64KB | 64KB |
+| 70000B | unpooled | 128KB |
 
 ## 7. Decisions
 

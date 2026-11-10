@@ -26,9 +26,9 @@ import (
 // is less than twice its length (except below MinSize), and the class is
 // one bit operation away. Small, Medium and Large name common sizes.
 const (
-	MinSize = 64       // smallest class: one cache line
-	Small   = 2 << 10  // one MTU-sized datagram
-	Medium  = 16 << 10 // a typical stream read
+	MinSize = 64        // smallest class: one cache line
+	Small   = 2 << 10   // one MTU-sized datagram
+	Medium  = 16 << 10  // a typical stream read
 	Large   = 128 << 10 // largest pooled class; UDP datagrams have a separate limit
 )
 

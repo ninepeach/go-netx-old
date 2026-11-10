@@ -51,7 +51,7 @@ its whole life and borrows a larger one from the pool only when needed:
 
 - *Grow* when `Peek(n)` needs more than the buffer holds, or a `Fill` finds
   it full: move to the pool's class for the frame (`buf.Capacity`: powers of
-  two from 64B to 64KB, at least one class up), or `Max` if
+  two from 64B to 128KB, at least one class up), or `Max` if
   larger), copying the buffered bytes, and release the previous borrowed
   buffer.
 - *Compact* before growing when consumed bytes sit at the front.

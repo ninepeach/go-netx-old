@@ -327,7 +327,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 
 | ID | P | 检查点 | 状态 | 测试 | 说明 |
 |---|---|---|---|---|---|
-| BUF-01 | P0 | 按大小选到正确的档位（2 的幂，64B…64KB）；超大请求不进池 | ✅ | `buf.GetClasses` |  |
+| BUF-01 | P0 | 按大小选到正确的档位（2 的幂，64B…128KB）；超大请求不进池 | ✅ | `buf.GetClasses` |  |
 | BUF-02 | P0 | `len(B)` 等于请求的大小 | ✅ | `buf.GetClasses` |  |
 | BUF-03 | P0 | `Copy` 不与源数据共享内存 | ✅ | `buf.Copy` |  |
 | BUF-04 | P0 | 预算按容量扣除，释放后归还，超出时 Get 返回 nil | ✅ | `buf.BudgetChargesCapacity`<br>`buf.BudgetRejectsLargeBufferWithoutPartialCharge`<br>`buf.ReleaseClearsViewAndRefundsUnpooledCapacity` |  |
@@ -341,7 +341,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | BUF-12 | P2 | 热路径零分配 | ✅ | `buf.BenchmarkGetReleaseBySize`<br>`buf.BenchmarkGetRelease` |  |
 | BUF-13 | P1 | Release 后 `B` 被置为 nil，避免继续使用旧的切片 | ✅ | `buf.ReleaseClearsViewAndRefundsUnpooledCapacity` |  |
 | BUF-14 | P1 | 预算不足时不会先扣掉一部分 | ✅ | `buf.BudgetRejectsLargeBufferWithoutPartialCharge` |  |
-| BUF-15 | P0 | 档位都是 2 的幂，共 11 档（64B…64KB）；容量不小于请求、从 64B 起小于请求的 2 倍；`Capacity(n)` 与 `Get(n)` 的容量和预算扣除一致 | ✅ | `buf.PowerOfTwoClasses` |  |
+| BUF-15 | P0 | 档位都是 2 的幂，共 12 档（64B…128KB）；容量不小于请求、从 64B 起小于请求的 2 倍；`Capacity(n)` 与 `Get(n)` 的容量和预算扣除一致 | ✅ | `buf.PowerOfTwoClasses` |  |
 | BUF-16 | P1 | 对 nil 调用 `Release` 什么都不做（预算不足时 Get 返回的 nil 可以直接 Release） | ✅ | `buf.ReleaseNilIsNoop` |  |
 | BUF-17 | P1 | `netxdebug` 下 Release 把整块缓冲填成 `Poison`，释放后的读取和下一个持有者看不到旧数据 | ✅ | `buf.ReleasePoisonsInDebug` | 仅 netxdebug 构建 |
 
@@ -362,6 +362,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | STREAM-16 | P1 | 数据源连续多次返回 `(0, nil)` 时，`Peek`、`Fill`、`Read` 返回 `io.ErrNoProgress`，不空转 | ✅ | `stream.EmptyReadsDoNotSpin` |  |
 | STREAM-17 | P0 | 负数参数：`Peek(n<0)` 返回 `ErrNegativeCount`，`Discard(n<=0)` 返回 0；两者都不改变内部状态，之后的调用照常工作 | ✅ | `stream.NegativeCounts` | Fuzz 覆盖负数参数 |
 | STREAM-22 | P1 | `Shrink`：缓冲区为空且已升级时归还大缓冲区（预算归零）、回到 IdleSize 并返回 true；有数据缓冲、未升级、Release 之后都不做任何事并返回 false；之后照常读取；升级、读完、Shrink 循环零分配 | ✅ | `stream.ShrinkReturnsGrownBufferWhenEmpty` | Fuzz 覆盖 Shrink 不丢数据；零分配断言只在非 race 构建下生效 |
+| STREAM-23 | P0 | `ReaderOptions.Max` 不设时默认 64KB，不随 `buf.Large` 变化：buf 最大档位升到 128KB（#35）后，零值配置的 Reader 不能悄悄接受两倍大的帧 | ✅ | `stream.DefaultMaxIs64KB` |  |
 
 ### 8.5.2 Writer
 
@@ -501,7 +502,7 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | D-18 | 只影响性能的选项在平台做不到时照常运行，影响行为的选项做不到时报错 | 要求同一份配置在 Mac 开发机和 Linux 上都能运行。监听端 FastOpen（省一个往返）、`Batch`（每次系统调用收几个包）、macOS 上的 ReusePort（能绑定但不分流）只影响性能，做不到时按普通方式运行，并由 `socket.Supported()`、`udp.Conn.Batch()` 报告实际情况；能做到的平台尽量真实现（macOS 监听端 FastOpen）。不适用于当前网络类型的选项（D-14）、达不到请求大小的缓冲区（D-16）、其他平台上的 ReusePort（第二次绑定会失败）会改变行为，仍然报错 |
 | D-19 | 拨出方向不支持 FastOpen，Dialer 设置了就报错 | 实测 Linux 上拿到 TFO cookie 后，用 FastOpen 拨一个已关闭的端口，Dial 约 100µs 返回成功，Write 也成功，错误到 Read 才出现，Dial 超时和 `DialEvent` 不再反映对端是否可达，网关会把挂掉的上游当成可用。这会改变行为，不属于 D-18 的性能项。网关拨上游通常不需要省这一个往返；监听端 FastOpen 保留。配置错误要在启动时暴露：`socket.CheckDialer` / `tcp.DialOptions.Validate` 不拨号就返回同一错误，`tcp.Dialer` 在解析地址、建 socket 之前就返回它（DIAL-09） |
 | D-20 | `Get` 只查找，`Touch` 是唯一更新 LastSeen 的操作 | 查找时顺带刷新时间，会让后台查询、`Range`、管理操作把空闲 flow 一直续命。拆开后，空闲超时只反映网关显式记录的真实流量。查找与 Touch 之间被 Sweep 插入的竞态（REG-15）改用“LastSeen 加冻结位”的单字 CAS 解决。代价：网关在收到数据时要自己调用 `Touch` 或 `GetAndTouch`；`Get` 因此更快 |
-| D-21 | buf 改为 2 的幂分档（64B…64KB，共 11 档），取代原来的 2KB、16KB、64KB 三档 | 三档最多浪费 8 倍，预算按容量扣，等于同样的预算少装好几倍数据（3KB 的消息占 16KB，50B 的包占 2KB）。主流 Go 缓冲池（netpoll 用的 mcache、fasthttp 用的 bytebufferpool、smux、gnet、libp2p）都按 2 倍分档。实测档位增多不影响速度（Get + Release 仍约 9ns，0 分配）。下限 64B：再小相对 `Buf` 本身的开销省不了多少 |
+| D-21 | buf 改为 2 的幂分档（64B…128KB，共 12 档；最初为 64B…64KB 共 11 档，#35 增加 128KB 档），取代原来的 2KB、16KB、64KB 三档 | 三档最多浪费 8 倍，预算按容量扣，等于同样的预算少装好几倍数据（3KB 的消息占 16KB，50B 的包占 2KB）。主流 Go 缓冲池（netpoll 用的 mcache、fasthttp 用的 bytebufferpool、smux、gnet、libp2p）都按 2 倍分档。实测档位增多不影响速度（Get + Release 仍约 9ns，0 分配）。下限 64B：再小相对 `Buf` 本身的开销省不了多少 |
 | D-22 | `Table.Close` 是永久关闭，之后 `GetOrOpen` 返回 `(nil, false)` | 原来的 Close 只是清空：Run 因 ctx 结束返回后，仍在运行的 UDP reader 会继续插入 flow，这些 flow 再也没人清理（REG-33）。永久关闭让“Run 返回后表里没有 flow、每个 flow 都收到 OnClose”成立。代价：行为变化，Close 之后不能再复用这张表；需要清空重用的调用方新建一张表 |
 | D-23 | 新增可选的 `TableOptions.MaxFlows`（默认 0 不限） | UDP 网关每个源地址一个 flow，伪造源地址的洪水会让表在空闲超时内无界增长。上限满时 `GetOrOpen` 返回 `(nil, false)`，由调用方丢包，并用 `Refused()` 计数；已有 flow 不受影响。只在创建时多一次原子加减，查找路径不变（实测 `GetOrOpen` 已有 key、`GetAndTouch` 前后差异在噪声 ±10% 内）。不做淘汰旧 flow 的 LRU：那会让攻击者挤掉真实会话 |
 
