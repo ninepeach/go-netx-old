@@ -181,3 +181,28 @@ func BenchmarkGetReleaseBySize(b *testing.B) {
 		})
 	}
 }
+
+// New and NewPacket return empty buffers of sing's default sizes from
+// Default: BufferSize (32KB) for a stream read or copy, UDPBufferSize
+// (16KB) for a datagram. Both are pooled classes.
+//
+// Checks: BUF-26
+func TestDefaultSizes(t *testing.T) {
+	before := Outstanding()
+	for _, c := range []struct {
+		name string
+		b    *Buf
+		want int
+	}{{"New", New(), 32 << 10}, {"NewPacket", NewPacket(), 16 << 10}} {
+		if c.b.Len() != 0 || c.b.Cap() != c.want || c.b.FreeLen() != c.want || c.b.pool != Default || c.b.class < 0 {
+			t.Fatalf("%s: len %d cap %d pooled %v", c.name, c.b.Len(), c.b.Cap(), c.b.class >= 0)
+		}
+		c.b.Release()
+	}
+	if BufferSize != 32<<10 || UDPBufferSize != 16<<10 {
+		t.Fatalf("BufferSize %d UDPBufferSize %d", BufferSize, UDPBufferSize)
+	}
+	if got := Outstanding() - before; got != 0 {
+		t.Fatalf("%d outstanding", got)
+	}
+}

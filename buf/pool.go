@@ -34,6 +34,21 @@ func GetHeadroom(head, size int) *Buf { return Default.GetHeadroom(head, size) }
 // Copy returns a buffer from Default holding a copy of data.
 func Copy(data []byte) *Buf { return Default.Copy(data) }
 
+// Default sizes, as in sing: BufferSize for one stream read or one step of
+// a copy loop, UDPBufferSize for one datagram. They are only defaults; Get
+// takes any size.
+const (
+	BufferSize    = 32 << 10
+	UDPBufferSize = 16 << 10
+)
+
+// New returns an empty buffer from Default with room for BufferSize bytes.
+func New() *Buf { return Default.Get(BufferSize) }
+
+// NewPacket returns an empty buffer from Default with room for
+// UDPBufferSize bytes.
+func NewPacket() *Buf { return Default.Get(UDPBufferSize) }
+
 // Get returns an empty buffer with room for size bytes: Len 0, Cap and
 // FreeLen size. It never returns nil and panics if size is negative.
 // Contents are not zeroed: write before you read or send.
