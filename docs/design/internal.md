@@ -63,3 +63,7 @@ Reads every test function's `// Checks:` directive (ignoring build tags) and
 regenerates the test column of [docs/TESTING.md](../TESTING.md); its unit
 test (DOC-01) fails `go test` on any mismatch, and DOC-02 requires a design
 document for every package. Rules: [docs/CONTRIBUTING.md](../CONTRIBUTING.md).
+
+## Cross-repository target-design alignment (2026-11-10)
+
+The [canonical target design](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/design.md) and [phased implementation plan](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/implementation-steps.zh.md) describe additional planned abstractions and acceptance criteria. This document specifies the **current module contract**. Internal helpers are implementation details, not independent public contract layers from the canonical phased plan. Do not treat target APIs as implemented or change this module's boundaries without an explicit cross-repository design decision.
