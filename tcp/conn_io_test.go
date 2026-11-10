@@ -27,7 +27,8 @@ var (
 // closes its write side; the handler reads to EOF, answers, and closes its
 // own write side with CloseWrite, so the client reads the answer to EOF
 // while the connection is still open. On another connection, CloseRead
-// makes a pending-free Read return at once instead of waiting for data.
+// makes Read return at once, with no data and an error (io.EOF on Unix,
+// a shutdown error on Windows), instead of waiting for data.
 //
 // Checks: TCP-32
 func TestConnHalfClose(t *testing.T) {
@@ -68,8 +69,11 @@ func TestConnHalfClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	conns[0].SetReadDeadline(time.Now().Add(5 * time.Second)) // fail, not hang
-	if n, err := conns[0].Read(make([]byte, 1)); n != 0 || err != io.EOF {
-		t.Fatalf("Read after CloseRead = %d, %v; want 0, EOF without waiting", n, err)
+	// io.EOF on Unix; Windows reports the shutdown as an error (WSAESHUTDOWN).
+	n, err := conns[0].Read(make([]byte, 1))
+	var ne net.Error
+	if n != 0 || err == nil || (errors.As(err, &ne) && ne.Timeout()) {
+		t.Fatalf("Read after CloseRead = %d, %v; want 0 and an error without waiting", n, err)
 	}
 	if _, err := clients[0].Write([]byte("x")); err != nil { // the client may still send
 		t.Fatal(err)

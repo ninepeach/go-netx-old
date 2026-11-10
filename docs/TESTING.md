@@ -148,7 +148,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | TCP-29 | P1 | 双栈监听 `[::]` 同时接受 IPv4 与 IPv6 客户端；IPv4 映射地址按 IPv4 计入 `MaxConnsPerIP`，不占 IPv6 客户端的额度 | ✅ | `tcp.DualStackAcceptsIPv4` | 同上 |
 | TCP-30 | P0 | `Serve` 被调用之前已经 `Shutdown`：第一次 `Serve` 返回 nil、不接受连接，第二次返回 `ErrClosed`；监听已关闭；之后的 `Shutdown` 立即返回 nil | ✅ | `tcp.ServeAfterShutdownBeforeServe` | 调用顺序由测试固定，不依赖调度；REG-34 |
 | TCP-31 | P1 | `Serve` 之前 `Close`（中止）：`Serve` 仍返回 `ErrClosed`，重复调用也是；只有优雅的 `Shutdown` 算作已请求的停止 | ✅ | `tcp.ServeAfterCloseBeforeServeIsErrClosed` |  |
-| TCP-32 | P0 | 已接受的 `*tcp.Conn` 半关闭：客户端发完请求 `CloseWrite`，handler 读到 EOF 后回复并 `CloseWrite`，客户端读到完整回复和 EOF，连接未完全关闭；另一条连接上 `CloseRead` 之后 `Read` 立即返回 EOF，客户端仍可发送 | ✅ | `tcp.ConnHalfClose` | REG-38 |
+| TCP-32 | P0 | 已接受的 `*tcp.Conn` 半关闭：客户端发完请求 `CloseWrite`，handler 读到 EOF 后回复并 `CloseWrite`，客户端读到完整回复和 EOF，连接未完全关闭；另一条连接上 `CloseRead` 之后 `Read` 立即返回、无数据、带错误（Unix 为 EOF，Windows 为 WSAESHUTDOWN），客户端仍可发送 | ✅ | `tcp.ConnHalfClose` | REG-38 |
 | TCP-33 | P0 | `io.Copy` 经过 `*tcp.Conn` 双向转发（`*tcp.Conn`↔`*tcp.Conn`、`*tcp.Conn`↔`*net.TCPConn`）：每个方向 1MB 完整送达，各自的半关闭传到对端，两个 Copy 都在不完全关闭的情况下结束；`*tcp.Conn` 实现 `io.ReaderFrom`、`io.WriterTo`、`CloseWrite`、`CloseRead` | ✅ | `tcp.ConnRelayWithIOCopy` | Linux 上走 splice 由 strace 实测（见 design/tcp.md）；REG-38 |
 | TCP-34 | P1 | 底层不是 TCP（`NewServer` 配自定义 listener，这里是包装过的 `net.Pipe`）：`CloseWrite`/`CloseRead` 返回 `errors.ErrUnsupported` 且不关闭任何东西；`ReadFrom`/`WriteTo` 经过包装器自己的 `Read`/`Write`，包装器看到全部字节，数据完整 | ✅ | `tcp.ConnNonTCPUnderlying` |  |
 
