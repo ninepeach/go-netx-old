@@ -148,8 +148,9 @@ func (t *Table[K, V]) GetOrOpen(k K, newValue func() V) (f *Flow[V], created boo
 // Refused returns how many GetOrOpen calls MaxFlows refused.
 func (t *Table[K, V]) Refused() uint64 { return t.refused.Load() }
 
-// Closed reports whether Close has been called. A closed table holds no
-// flows and creates none.
+// Closed reports whether Close has started. It does not wait for all shards
+// to be emptied or for OnClose callbacks to finish. Once true, Close will
+// eventually remove every flow, and no new flow survives the close.
 func (t *Table[K, V]) Closed() bool { return t.shut.Load() }
 
 // left records that n flows left the table.
@@ -172,8 +173,8 @@ func (t *Table[K, V]) Remove(k K, id uint64) bool {
 	}
 	f.freeze() // no Touch from here on
 	delete(s.m, k)
+	t.left(1) // release capacity while holding the shard lock
 	s.mu.Unlock()
-	t.left(1)
 	t.closed(k, f)
 	return true
 }
@@ -255,12 +256,12 @@ func (t *Table[K, V]) Sweep(now time.Time) int {
 		for k, f := range s.m {
 			if f.expire(cutoff) {
 				delete(s.m, k)
+				t.left(1) // keep capacity in sync with map removal
 				victims = append(victims, victim{k, f})
 			}
 		}
 		s.mu.Unlock()
 	}
-	t.left(len(victims))
 	for _, v := range victims {
 		t.closed(v.k, v.f)
 	}
@@ -304,6 +305,9 @@ func (t *Table[K, V]) advance(ns int64) {
 // after Run returned) cannot leave flows behind that nothing will sweep
 // or close. Get, Remove, Range and Len keep working on the empty table.
 // Close is idempotent; OnClose runs once for each flow it removes.
+// Concurrent Close calls and Remove/Sweep callbacks can still be running
+// after this call returns. Callers requiring callback completion must first
+// stop concurrent table operations and wait for them to finish.
 func (t *Table[K, V]) Close() {
 	t.shut.Store(true)
 	for i := range t.shards {
@@ -312,8 +316,8 @@ func (t *Table[K, V]) Close() {
 		m := s.m
 		s.closed = true
 		s.m = make(map[K]*Flow[V])
+		t.left(len(m)) // capacity is released before the shard unlocks
 		s.mu.Unlock()
-		t.left(len(m))
 		for k, f := range m {
 			t.closed(k, f)
 		}
