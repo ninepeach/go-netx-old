@@ -56,6 +56,7 @@ func ReleaseMulti([]*Buf)                    // releases each once, clears the s
 const Debug bool                             // true with -tags netxdebug
 const Poison = 0xDB                          // debug builds fill released buffers with it
 func Outstanding() int64                     // debug builds
+var ErrInvalidCount error                    // a Read/ReadFrom/Write count outside 0..len(p)
 ```
 
 Files, as in sing: `alloc.go` (size classes, `Capacity`), `pool.go`
@@ -130,7 +131,16 @@ the caller planned for, and `Reset` and `Unreserve` cannot pass it.
 `Unreserve` panic on sizes that do not fit: those sizes are the caller's
 constants, so a mismatch is a programming error, as in sing. `Write`,
 `WriteString`, `WriteByte` and the `Read*From` methods take data from
-outside and return `io.ErrShortBuffer` instead.
+outside and return `io.ErrShortBuffer` instead. `Advance` takes any
+non-negative n, up to `math.MaxInt`, and drops at most `Len` bytes; it never
+computes start+n, which could overflow.
+
+**Counts from outside are checked.** A reader, `PacketConn` or writer that
+reports a count outside 0..len(p) breaks the io contract; `ReadOnceFrom`,
+`ReadPacketFrom` and `WriteTo` return `ErrInvalidCount` and leave the
+cursors alone rather than move them past `Cap` or before the data.
+`WriteTo` turns a short write with a nil error into `io.ErrShortWrite`, as
+`stream.Writer.Flush` does (REG-30, REG-36).
 
 **Contents are not zeroed** (cost). A new buffer is empty; callers write
 before they send. Sending bytes that were never written would leak a
@@ -174,7 +184,7 @@ D-05), D-25 (no reference counting), D-26 (largest pooled class 64KB).
 
 ## 8. Testing
 
-BUF-01…BUF-23, NF-11 (fuzz against a slice model of every cursor
+BUF-01…BUF-25, NF-11 (fuzz against a slice model of every cursor
 operation) in [docs/TESTING.md](../TESTING.md).
 
 ## 9. Open items

@@ -20,8 +20,12 @@ const (
 
 // Capacity returns the memory a buffer of n bytes (headroom included)
 // occupies: the smallest class holding n, or n itself above Large, where
-// buffers are allocated directly and not pooled.
+// buffers are allocated directly and not pooled. It panics if n is
+// negative, like Get.
 func Capacity(n int) int {
+	if n < 0 {
+		panic("buf: negative size")
+	}
 	if c := classOf(n); c >= 0 {
 		return MinSize << c
 	}

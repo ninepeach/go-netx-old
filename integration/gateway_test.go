@@ -79,7 +79,7 @@ func TestTCPFlowLifecycle(t *testing.T) {
 func TestFullQueueReleasesEvictedBuffers(t *testing.T) {
 	before := buf.Outstanding()
 	pool := buf.NewPool()
-	var dropped atomic.Int32
+	var dropped, handled atomic.Int32
 	q := queue.New(queue.Options[*buf.Buf]{
 		Cap: 2, Policy: queue.DropOldest,
 		OnDrop: func(b *buf.Buf) { dropped.Add(1); b.Release() },
@@ -88,6 +88,7 @@ func TestFullQueueReleasesEvictedBuffers(t *testing.T) {
 		if b := pool.Copy(p.Data); !q.Push(b) {
 			b.Release()
 		}
+		handled.Add(1)
 	}, udp.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +105,9 @@ func TestFullQueueReleasesEvictedBuffers(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		cl.Write([]byte{byte(i)})
 	}
-	eventually(t, func() bool { return conn.Stats().RecvPackets == 10 })
+	// RecvPackets counts a datagram before its handler runs; wait for the
+	// handler itself.
+	eventually(t, func() bool { return handled.Load() == 10 })
 	if dropped.Load() != 8 || q.Len() != 2 {
 		t.Fatalf("dropped=%d len=%d", dropped.Load(), q.Len())
 	}
