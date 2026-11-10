@@ -5,7 +5,8 @@ gateways. Each gateway owns its protocol, deployment, resource budget and
 failure domain; go-netx owns only what all of them need and none of them
 should reimplement.
 
-**This layout is frozen.** Changes to it follow the rules at the end.
+**This layout is frozen.** Changes to it follow the freeze rules below. This
+document is the overall design; each package has its own (see Module designs).
 
 ## Design principles
 
@@ -101,157 +102,23 @@ type Service interface {
 
 ## Transport behaviour
 
-**UDP.** `Options.Readers` goroutines each own preallocated receive buffers
-and call the handler inline; on Linux each system call receives up to
-`Options.Batch` (default 8) queued datagrams with `recvmmsg`, which roughly
-halves receive cost under load without adding latency. With `ReusePort` each reader has its own socket
-and the kernel pins each flow to one reader (`Packet.Reader`), so gateways can
-shard per-flow state without locks. There is no internal queue: the kernel
-receive buffer is the queue (`socket.Options.RecvBuffer`), and overflows are
-reported in `Stats.KernelDrops` on Linux (the kernel reports drops with the
-next queued datagram, so the count lags once traffic stops).
-`udp.MaxDatagram` (65000) is the size limit in both directions; `MaxPacket`
-defaults to it and may not exceed it. Datagrams larger than `MaxPacket` are
-dropped and counted, never delivered truncated.
+The transports share one shape; the details are in each package's design.
 
-**TCP.** One goroutine per connection on the Go netpoller. `Options.Admit`
-decides admission at accept time; rejections are counted, not logged. The
-handler context is cancelled only on abort. Temporary accept errors back off
-5ms doubling to 1s, and Close or Shutdown cuts the backoff short. The server
-holds no per-connection buffers: reading is the handler's job.
+- **TCP** ([tcp.md](docs/design/tcp.md)): one goroutine per connection on
+  the Go netpoller; admission (`Admit`, `MaxConnsPerIP`) at accept time,
+  refusals counted, not answered; a `Draining()` signal, then abort after
+  the drain timeout. The server holds no per-connection buffers.
+- **UDP** ([udp.md](docs/design/udp.md)): `Readers` goroutines call the
+  handler inline with preallocated buffers, no internal queue (the kernel
+  receive buffer is the queue, drops counted); `ReusePort` gives each
+  reader its own socket so per-flow state shards without locks; `recvmmsg`
+  batches on Linux. `udp.MaxDatagram` (65000) bounds both directions.
+- **Socket options** ([socket.md](docs/design/socket.md)): one `Options`
+  for both; performance options degrade where a platform lacks them,
+  behaviour options fail (D-18).
 
-## TCP compared with net/http and fasthttp
-
-The TCP transport was reviewed against the two most used Go HTTP servers
-(net/http as of Go 1.24.7, fasthttp `000816e`, 2026-11). Gin has no transport
-of its own: `gin.Run` builds an `http.Server`, so it shares net/http's.
-
-**The workloads differ, and that decides every item below.** fasthttp is
-built for web applications: many short-lived connections and a high request
-rate, so it optimises the cost of each new connection and request. go-netx
-serves IM, game and media gateways: relatively few long-lived connections
-that stay open, mostly idle, for minutes or hours. A fasthttp idea is
-adopted when it also holds, or matters more, for long-lived connections,
-and rejected when it only pays off for short ones.
-
-| | net/http | fasthttp | go-netx |
-|---|---|---|---|
-| Connection model | goroutine per conn | worker pool reusing goroutines (LIFO) | goroutine per conn |
-| Temporary accept errors | 5ms→1s backoff, `time.Sleep` | `Timeout` only, fixed 1s sleep | 5ms→1s backoff, interruptible |
-| Permanent error detection | `Temporary()` | string match on the error text | `errors.As` plus a stopped flag |
-| Concurrency cap | none | `Concurrency`, replies 503 | `Admit`, closes and counts |
-| Per-IP cap | none | `MaxConnsPerIP` | `MaxConnsPerIP`, IPv6 grouped by /64 |
-| TCP keepalive | default 15s, fixed | on/off and period | `socket.Options.KeepAlive`: off, idle, interval, count |
-| Graceful shutdown | close listener, poll idle conns | close listener, poll every 100ms | `Draining()` channel, no polling |
-| After drain timeout | conns keep running | conns keep running | conns aborted automatically |
-| Idle connection memory | buffers held for life | `ReduceMemoryUsage` frees them | none held by the server |
-| Error reporting | logs | logs, rate-limited | counters (`Stats`) |
-
-### Adopted
-
-| fasthttp idea | Problem it solves there | For long-lived gateways | Decision |
-|---|---|---|---|
-| Worker pool | creating goroutines for many short connections | connections are rare events; ~3µs each is noise | rejected (D-07) |
-| 503 on overload | browsers need a status code | the protocol is the gateway's | rejected (D-08) |
-| `MaxConnsPerIP` | one source exhausting connections | same need on a public gateway | adopted (v1.1.0) |
-| Keepalive settings | managing reused idle connections | must detect peers that vanished | adopted (v1.1.0) |
-| `ReduceMemoryUsage` | idle keep-alive connections holding buffers | connections are idle most of the time: the gain is larger | adopted as `stream.Reader` |
-
-From net/http and from go-netx's own requirements:
-
-- **net/http's backoff curve**, but interruptible: a shutdown never waits
-  out a sleep (REG-02).
-- **A drain signal instead of hooks or polling**: long-lived handlers select
-  on `Conn.Draining()` and tell clients to move; Serve returns through a
-  channel when the last handler ends.
-- **Abort after the drain timeout.** Both references return `ctx.Err()` and
-  leave connections running for the caller to clean up; go-netx closes them
-  and cancels handler contexts, so a timed-out shutdown leaves nothing
-  behind (verified by the leak checks, RUN-16).
-- **Counters, not logs**, on the accept path: a flood of rejected or failed
-  accepts cannot flood the log.
-
-### Rejected
-
-Recorded as design decisions D-07 to D-09 in docs/TESTING.md.
-
-- **Worker pool (fasthttp).** It saves goroutine creation and stack growth:
-  measured about 3.5–4.2µs and 1 allocation for a new goroutine against
-  about 0.6µs and none for a pooled handoff (2 vCPU, a handler with some
-  stack depth), so about 3µs per connection. A full accept measures about
-  79µs (`BenchmarkAccept`), so the pool would save about 4%: roughly 3% of
-  a core at 10k new connections per second. This is an optimisation for
-  fasthttp's workload, many short connections; with long-lived IM and game
-  connections new connections are rare and it does not pay for an
-  idle-worker lifecycle. Revisit only if a gateway has to serve short-lived
-  connections at tens of thousands per second, with a benchmark of that
-  workload.
-- **Protocol replies on rejection** (fasthttp's 503). The transport does not
-  speak the protocol; a gateway that wants to answer before closing does so
-  in its own admission logic.
-- **Per-connection contexts** (net/http's `ConnContext`). One allocation per
-  connection for something gateways rarely need: shared values come from the
-  Serve context, and identity from `Conn.ID()`.
-- **Matching error strings, fixed sleeps, polling shutdown**: already done
-  better here, as the table shows.
-
-### Added in v1.1.0
-
-1. **Configurable TCP keepalive.** `socket.Options.KeepAlive` sets idle
-   time, probe interval and probe count (`net.KeepAliveConfig`), or
-   disables probes. On a listener it applies to every accepted connection,
-   on a dialer to every dialed one; the zero value keeps Go's default
-   (enabled, 15s). IM gateways use it to notice peers that vanished without
-   a FIN, such as a phone switching networks.
-2. **Per-IP admission, local to one server.** `tcp.Options.MaxConnsPerIP`
-   caps concurrent connections per client address, checked before `Admit`;
-   refusals are counted in `Stats.RejectedPerIP`, and the slot is returned
-   when the connection closes or `Admit` refuses it. IPv6 clients are
-   grouped by prefix (`IPv6PrefixBits`, default 64) because one client can
-   rotate addresses within a /64; IPv4 and IPv4-mapped addresses count per
-   address. The counter is `limit.PerKey`, which forgets keys at zero so
-   memory follows current clients only.
-
-   It is deliberately not distributed (D-10): admission runs in the accept
-   loop and must stay local and non-blocking. With a load balancer that
-   hashes by source IP, every address always reaches the same node and the
-   local cap is the global one. Limits per user or session across nodes
-   belong to the gateway. Behind an L4 load balancer, make sure the real
-   client address arrives (source preservation, or a future PROXY protocol
-   option); otherwise every client looks like the balancer.
-
-### Stream I/O (`stream`, v1.1.0)
-
-Two buffer behaviours from netpoll and fasthttp, built on go-netx's own
-model instead of their event loops (see the netpoll comparison below):
-
-- **`stream.Reader` holds memory only while data is pending.** It keeps a
-  512B buffer while the connection is idle, moves to `buf.Pool`'s size
-  classes when a frame needs more, and goes back once the data is consumed
-  after a light read. `Peek`/`Discard` let a gateway decoder accumulate a
-  frame across reads; where the frame ends stays the decoder's decision.
-  `Max` bounds a frame (`ErrTooLarge`); a short budget gives `ErrNoBuffer`
-  without losing buffered data. Measured with 4000 idle connections: about
-  3.6KB less per connection than a 4KB `bufio.Reader`.
-- **`stream.Writer` sends a backlog with one writev.** `Add` takes ownership
-  of a `*buf.Buf`; `Flush` writes them in order and releases them all,
-  written or not. A single buffer uses `Write`. Measured through a
-  `*tcp.Conn`: 8 queued messages about 6× faster than one `Write` each, 32
-  about 9–10×, with no allocations.
-
-`net.Buffers` only uses writev on the standard library's own connection
-types, so wrapping a `net.Conn` silently loses it. `*tcp.Conn` therefore
-implements `stream.BuffersWriter`, passing writev through to the socket.
-Wrappers must do the same, never unwrap: unwrapping a TLS connection would
-bypass encryption.
-
-`stream` is a package of its own (D-12): `buf` manages memory only and the
-transports hold no buffers, so either would lose its single job.
-
-### Still planned
-
-- **PROXY protocol** support, if gateways run behind L4 load balancers that
-  do not preserve the source address.
+How the TCP transport compares with net/http and fasthttp, and why it
+adopts or rejects each of their ideas, is in [tcp.md](docs/design/tcp.md).
 
 ## Connection model compared with cloudwego/netpoll
 
@@ -275,7 +142,7 @@ it spins. A gateway that needs 500k–1M connections per node should use
 netpoll (or gnet) directly rather than go-netx growing its own event loop.
 
 Adopted from netpoll: the adaptive read buffer and gathered writes, as
-`stream`. Not adopted: its poller, its goroutine pool (D-07), and
+`stream` ([stream.md](docs/design/stream.md)). Not adopted: its poller, its goroutine pool (D-07), and
 `LinkBuffer`'s linked-chunk API, which exists because netpoll's poller reads
 before a handler exists; with the handler reading for itself, one
 contiguous buffer is enough.
@@ -297,8 +164,10 @@ contiguous buffer is enough.
 Discard paths are where leaks happen, so `queue.Options.OnDrop` receives
 every evicted or drained item. For buffers, pass `(*buf.Buf).Release`.
 
-Build with `-tags netxdebug` to panic on double Release and count outstanding
-buffers (`buf.Outstanding()`). Tests and load tests always run with it.
+These rules are defined here for every package; [buf.md](docs/design/buf.md)
+describes the types they apply to and how debug builds (`-tags netxdebug`)
+check them: double Release panics, `buf.Outstanding()` counts unreleased
+buffers, and released memory is poisoned. Tests and load tests run with it.
 
 ## Where shared structures stop
 
@@ -318,6 +187,18 @@ send queue that coalesces position updates are gateway code.
 
 ## Out of scope until measured
 
-- `recvmmsg`/`sendmmsg` batching: next step for UDP; the API does not change.
+- UDP send batching (`sendmmsg`, GSO): receive batching is done
+  (`udp.Options.Batch`); sending waits for a measured Media need.
 - io_uring: only if batching is proven to be the bottleneck.
 - Reliable UDP: belongs to a protocol layer, not here.
+
+## Documents
+
+`ninepeach/go-netx` is the single source of truth for go-netx's design.
+This file is the overall design; each package's design is in
+[docs/design](docs/design) (one file per package, `go test` enforces it,
+DOC-02); tests and decisions are in [docs/TESTING.md](docs/TESTING.md);
+working rules in [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md). A design
+change is made here, in the same pull request as the code. Copies
+elsewhere, such as the claude.ai Project or older design archives, are
+not authoritative.

@@ -1,7 +1,7 @@
 # Package tcp — design
 
 Overall design: [ARCHITECTURE.md](../../ARCHITECTURE.md). Comparison with
-net/http and fasthttp: ARCHITECTURE.md, "TCP compared with…".
+net/http and fasthttp: section 7 below.
 
 ## 1. Scope
 
@@ -102,7 +102,108 @@ addresses, error.
 
 D-07 (no worker pool), D-08 (no protocol reply on refusal), D-09 (no
 per-connection context), D-10 (per-IP cap is local), D-11 (goroutine per
-connection).
+connection; the netpoll comparison is in ARCHITECTURE.md, "Connection
+model").
+
+### Compared with net/http and fasthttp
+
+The TCP transport was reviewed against the two most used Go HTTP servers
+(net/http as of Go 1.24.7, fasthttp `000816e`, 2026-11). Gin has no transport
+of its own: `gin.Run` builds an `http.Server`, so it shares net/http's.
+
+**The workloads differ, and that decides every item below.** fasthttp is
+built for web applications: many short-lived connections and a high request
+rate, so it optimises the cost of each new connection and request. go-netx
+serves IM, game and media gateways: relatively few long-lived connections
+that stay open, mostly idle, for minutes or hours. A fasthttp idea is
+adopted when it also holds, or matters more, for long-lived connections,
+and rejected when it only pays off for short ones.
+
+| | net/http | fasthttp | go-netx |
+|---|---|---|---|
+| Connection model | goroutine per conn | worker pool reusing goroutines (LIFO) | goroutine per conn |
+| Temporary accept errors | 5ms→1s backoff, `time.Sleep` | `Timeout` only, fixed 1s sleep | 5ms→1s backoff, interruptible |
+| Permanent error detection | `Temporary()` | string match on the error text | `errors.As` plus a stopped flag |
+| Concurrency cap | none | `Concurrency`, replies 503 | `Admit`, closes and counts |
+| Per-IP cap | none | `MaxConnsPerIP` | `MaxConnsPerIP`, IPv6 grouped by /64 |
+| TCP keepalive | default 15s, fixed | on/off and period | `socket.Options.KeepAlive`: off, idle, interval, count |
+| Graceful shutdown | close listener, poll idle conns | close listener, poll every 100ms | `Draining()` channel, no polling |
+| After drain timeout | conns keep running | conns keep running | conns aborted automatically |
+| Idle connection memory | buffers held for life | `ReduceMemoryUsage` frees them | none held by the server |
+| Error reporting | logs | logs, rate-limited | counters (`Stats`) |
+
+#### Adopted
+
+| fasthttp idea | Problem it solves there | For long-lived gateways | Decision |
+|---|---|---|---|
+| Worker pool | creating goroutines for many short connections | connections are rare events; ~3µs each is noise | rejected (D-07) |
+| 503 on overload | browsers need a status code | the protocol is the gateway's | rejected (D-08) |
+| `MaxConnsPerIP` | one source exhausting connections | same need on a public gateway | adopted (v1.1.0) |
+| Keepalive settings | managing reused idle connections | must detect peers that vanished | adopted (v1.1.0) |
+| `ReduceMemoryUsage` | idle keep-alive connections holding buffers | connections are idle most of the time: the gain is larger | adopted as `stream.Reader` |
+
+From net/http and from go-netx's own requirements:
+
+- **net/http's backoff curve**, but interruptible: a shutdown never waits
+  out a sleep (REG-02).
+- **A drain signal instead of hooks or polling**: long-lived handlers select
+  on `Conn.Draining()` and tell clients to move; Serve returns through a
+  channel when the last handler ends.
+- **Abort after the drain timeout.** Both references return `ctx.Err()` and
+  leave connections running for the caller to clean up; go-netx closes them
+  and cancels handler contexts, so a timed-out shutdown leaves nothing
+  behind (verified by the leak checks, RUN-16).
+- **Counters, not logs**, on the accept path: a flood of rejected or failed
+  accepts cannot flood the log.
+
+#### Rejected
+
+Recorded as design decisions D-07 to D-09 in [docs/TESTING.md](../TESTING.md).
+
+- **Worker pool (fasthttp).** It saves goroutine creation and stack growth:
+  measured about 3.5–4.2µs and 1 allocation for a new goroutine against
+  about 0.6µs and none for a pooled handoff (2 vCPU, a handler with some
+  stack depth), so about 3µs per connection. A full accept measures about
+  79µs (`BenchmarkAccept`), so the pool would save about 4%: roughly 3% of
+  a core at 10k new connections per second. This is an optimisation for
+  fasthttp's workload, many short connections; with long-lived IM and game
+  connections new connections are rare and it does not pay for an
+  idle-worker lifecycle. Revisit only if a gateway has to serve short-lived
+  connections at tens of thousands per second, with a benchmark of that
+  workload.
+- **Protocol replies on rejection** (fasthttp's 503). The transport does not
+  speak the protocol; a gateway that wants to answer before closing does so
+  in its own admission logic.
+- **Per-connection contexts** (net/http's `ConnContext`). One allocation per
+  connection for something gateways rarely need: shared values come from the
+  Serve context, and identity from `Conn.ID()`.
+- **Matching error strings, fixed sleeps, polling shutdown**: already done
+  better here, as the table shows.
+
+#### Added in v1.1.0
+
+1. **Configurable TCP keepalive.** `socket.Options.KeepAlive` sets idle
+   time, probe interval and probe count (`net.KeepAliveConfig`), or
+   disables probes. On a listener it applies to every accepted connection,
+   on a dialer to every dialed one; the zero value keeps Go's default
+   (enabled, 15s). IM gateways use it to notice peers that vanished without
+   a FIN, such as a phone switching networks.
+2. **Per-IP admission, local to one server.** `tcp.Options.MaxConnsPerIP`
+   caps concurrent connections per client address, checked before `Admit`;
+   refusals are counted in `Stats.RejectedPerIP`, and the slot is returned
+   when the connection closes or `Admit` refuses it. IPv6 clients are
+   grouped by prefix (`IPv6PrefixBits`, default 64) because one client can
+   rotate addresses within a /64; IPv4 and IPv4-mapped addresses count per
+   address. The counter is `limit.PerKey`, which forgets keys at zero so
+   memory follows current clients only.
+
+   It is deliberately not distributed (D-10): admission runs in the accept
+   loop and must stay local and non-blocking. With a load balancer that
+   hashes by source IP, every address always reaches the same node and the
+   local cap is the global one. Limits per user or session across nodes
+   belong to the gateway. Behind an L4 load balancer, make sure the real
+   client address arrives (source preservation, or a future PROXY protocol
+   option); otherwise every client looks like the balancer.
 
 ## 8. Testing
 
