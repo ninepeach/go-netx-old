@@ -112,3 +112,7 @@ TCP-01…TCP-27, DIAL-01…DIAL-08, STREAM-14, OBS-01/02/06, NF-03/13 in
 ## 9. Open items
 
 - PROXY protocol for the real client address behind L4 balancers.
+
+## Cross-repository target-design alignment (2026-11-10)
+
+The [canonical target design](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/design.md) and [phased implementation plan](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/implementation-steps.zh.md) describe additional planned abstractions and acceptance criteria. This document specifies the **current module contract**. Current TCP transport handles connection lifecycle and admission. It does not import flow or instantiate the canonical plan's logical read/write Flow; gateways compose these layers. Do not treat target APIs as implemented or change this module's boundaries without an explicit cross-repository design decision.
