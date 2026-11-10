@@ -38,6 +38,7 @@ func (*Server) LoopContext(context.Context) error
 func (*Server) Stop() error                     // start shutdown, don't wait
 func (*Server) Shutdown(context.Context) error  // start shutdown and wait
 func (*Server) State() State                    // new→starting→running→stopping→stopped
+const StateNew, StateStarting, StateRunning, StateStopping, StateStopped // State has String()
 const AbortGrace = time.Second
 var ErrAlreadyRunning, ErrNotRunning, ErrAbortTimeout
 ```

@@ -18,8 +18,9 @@ type Limiter interface{ TryAcquire() bool; Release() }
 func NewConcurrency(max int) *Concurrency // at most max holders
 func NewRate(perSec float64, burst int) *Rate // token bucket; Release is a no-op
 func All(...Limiter) Limiter              // all must admit; partial success undone
-func NewPerKey[K comparable](max int) *PerKey[K] // TryAcquire(k), Release(k)
-func NewBudget(max int64) *Budget         // Reserve(n), Release(n), Used()
+func NewPerKey[K comparable](max int) *PerKey[K] // TryAcquire(k), Release(k), Keys(), Max()
+func NewBudget(max int64) *Budget         // Reserve(n), Release(n), Used(), Max()
+// Concurrency also has Max(); Keys() is the number of keys currently held
 ```
 
 ## 3. Design
