@@ -117,3 +117,7 @@ BUF-01…BUF-17, NF-11 (fuzz) in [docs/TESTING.md](../TESTING.md).
 ## 9. Open items
 
 None.
+
+## Cross-repository target-design alignment (2026-11-10)
+
+The [canonical target design](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/design.md) and [phased implementation plan](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/implementation-steps.zh.md) describe additional planned abstractions and acceptance criteria. This document specifies the **current module contract**. Current 64B–64KB sync.Pool classes and in-use Budget do not establish the canonical target's max retained bytes or per-class retained count. The target's larger size classes are examples, not the current API. Do not treat target APIs as implemented or change this module's boundaries without an explicit cross-repository design decision.
