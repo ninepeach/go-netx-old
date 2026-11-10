@@ -173,6 +173,8 @@ func TestMaxFlowsConcurrent(t *testing.T) {
 // TestCloseCanReturnWhileConcurrentOnCloseRuns documents the deliberately
 // non-joining Close contract. Stop concurrent operations before Close if
 // callback completion is required.
+//
+// Checks: FLOW-34
 func TestCloseCanReturnWhileConcurrentOnCloseRuns(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -202,6 +204,8 @@ func TestCloseCanReturnWhileConcurrentOnCloseRuns(t *testing.T) {
 
 // TestCloseBlocksNewFlowsAfterReturning ensures a concurrent writer cannot
 // recreate a flow after Close has returned.
+//
+// Checks: FLOW-35
 func TestCloseBlocksNewFlowsAfterReturning(t *testing.T) {
 	tb := NewTable[int, int](TableOptions[int, int]{MaxFlows: 1})
 	tb.GetOrOpen(1, nil)

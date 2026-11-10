@@ -253,13 +253,14 @@ func (t *Table[K, V]) Sweep(now time.Time) int {
 	for i := range t.shards {
 		s := &t.shards[i]
 		s.mu.Lock()
+		n := len(victims)
 		for k, f := range s.m {
 			if f.expire(cutoff) {
 				delete(s.m, k)
-				t.left(1) // keep capacity in sync with map removal
 				victims = append(victims, victim{k, f})
 			}
 		}
+		t.left(len(victims) - n) // capacity released before the shard unlocks
 		s.mu.Unlock()
 	}
 	for _, v := range victims {
