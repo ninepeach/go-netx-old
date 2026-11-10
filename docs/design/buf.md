@@ -120,7 +120,8 @@ is under twice its size from 64B up. The earlier three classes (2KB, 16KB,
 stays on the heap for two GC cycles after its last use, so pooling rare
 large ones keeps a burst's worth of them alive and raises the next GC
 target (the reason `fmt` drops buffers over 64KB, golang/go#23199). Larger
-requests are allocated directly and dropped on `Release`. The default
+requests are allocated directly and dropped on `Release`, which also
+clears the `*Buf`'s reference so a kept `*Buf` does not pin the memory. The default
 `stream.ReaderOptions.Max` is pinned at 64KB on its own.
 
 **Cap is what was asked for, not the class.** `Get(1000)` has `Cap` 1000

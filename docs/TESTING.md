@@ -339,7 +339,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | BUF-10 | P1 | `Reset` 清空数据、恢复原始头部空间和容量并取消 `Reserve`；不支持扩容 | ✅ | `buf.HeadroomAndCursors` | 超过 `Cap` 的需求要换更大的 buffer |
 | BUF-11 | P2 | GC 回收池中对象后，正确性不受影响 | ✅ | `buf.PoolCorrectAcrossGC` |  |
 | BUF-12 | P2 | 热路径零分配 | ✅ | `buf.BenchmarkGetReleaseBySize`<br>`buf.BenchmarkGetRelease`<br>`buf.BenchmarkHeaderPath` |  |
-| BUF-13 | P1 | Release 后 `Len`、`Cap` 归零；池化 buffer 再次取出时是干净的空 buffer；超过 64KB 的不进池 | ✅ | `buf.ReleaseResetsAndDropsUnpooled` |  |
+| BUF-13 | P1 | Release 后 `Len`、`Cap` 归零；池化 buffer 再次取出时是干净的空 buffer；超过 64KB 的不进池，Release 后不再引用其内存 | ✅ | `buf.ReleaseResetsAndDropsUnpooled` | REG-37 |
 | BUF-14 | P1 | 预算不足时不会先扣掉一部分 | ➖ |  | D-24：buf 没有预算 |
 | BUF-15 | P0 | 档位都是 2 的幂，共 11 档（64B…64KB，D-26）；内存不小于请求、从 64B 起小于请求的 2 倍；`Capacity(n)` 与 `Get(n)` 实际占用的内存一致；头部空间计入档位 | ✅ | `buf.PowerOfTwoClasses` |  |
 | BUF-16 | P1 | 对 nil 调用 `Release` 什么都不做 | ✅ | `buf.ReleaseNilIsNoop` |  |
@@ -352,6 +352,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | BUF-23 | P1 | 批量辅助函数：`LenMulti`/`IsEmptyMulti` 只计数据；`ToSliceMulti` 按顺序别名每个缓冲区，可作 `net.Buffers` 写出；`CopyMulti` 在 `len(dst)` 处停止；`ReleaseMulti` 每个缓冲区只释放一次、清空切片、跳过 nil | ✅ | `buf.Multi` |  |
 | BUF-24 | P0 | `Advance(math.MaxInt)` 只丢弃 `Len` 字节，游标不溢出成负数，之后仍可 `ExtendHeader` | ✅ | `buf.AdvanceHugeDoesNotOverflow` | REG-35 |
 | BUF-25 | P0 | 来源或目标报告越界计数（负数、超过给定空间）时，`ReadOnceFrom`/`ReadPacketFrom`/`WriteTo` 返回 `ErrInvalidCount` 且不改变缓冲区；`WriteTo` 少写且无错误时返回 `io.ErrShortWrite`，不消费数据 | ✅ | `buf.InvalidIOCounts` | REG-36 |
+| REG-37 | buf | 超过 64KB 的非池化 buffer 在 Release 后仍引用底层内存（实测 65537 字节）：调用方若在结构体里留着这个 `*Buf`，整块内存无法回收（外部审查发现） |  | ✅ |
 
 ## 8.5 stream：流式读写
 
