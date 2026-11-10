@@ -1,82 +1,169 @@
 package buf
 
 import (
+	"bytes"
 	"encoding/binary"
+	"io"
 	"testing"
-
-	"github.com/ninepeach/go-netx/limit"
 )
 
-// Random Get/Release sequences: the budget always equals the capacity of
-// the buffers held, Get refuses exactly when the budget is short, and no
-// two held buffers share memory.
+// Random Get/Release sequences with cursor operations, checked against a
+// plain-slice model: each held buffer's data matches its model after every
+// operation, operations that must fail fail without changing anything, no
+// two held buffers share memory, and every Get is released.
 //
 // Checks: NF-11
 func FuzzGetRelease(f *testing.F) {
 	f.Add([]byte{0, 10, 0, 0, 200, 0, 1, 0, 0, 1})
 	f.Add([]byte{0, 255, 255, 0, 0, 1, 0, 255, 255, 1, 0})
+	f.Add([]byte{0, 40, 0, 2, 3, 0, 3, 2, 0, 4, 1, 0, 5, 1, 0, 6, 2, 0, 7, 1, 0, 8, 0, 0, 1, 0, 0})
 	f.Fuzz(func(t *testing.T, ops []byte) {
-		const max = 200 << 10
-		budget := limit.NewBudget(max)
-		p := NewPool(budget)
-		type held struct {
-			b    *Buf
-			mark byte
-			cost int64
+		p := NewPool()
+		before := Outstanding()
+		type model struct {
+			b          *Buf
+			head, size int // as obtained
+			start      int // headroom left
+			data       []byte
+			reserved   int
 		}
-		var live []held
-		var used int64
+		var live []*model
+		check := func(m *model) {
+			t.Helper()
+			if !bytes.Equal(m.b.Bytes(), m.data) || m.b.Start() != m.start ||
+				m.b.Cap() != m.head+m.size-m.reserved || m.b.FreeLen() != m.head+m.size-m.reserved-m.start-len(m.data) {
+				t.Fatalf("buffer %q start %d cap %d free %d; model %q start %d head %d size %d reserved %d",
+					m.b.Bytes(), m.b.Start(), m.b.Cap(), m.b.FreeLen(), m.data, m.start, m.head, m.size, m.reserved)
+			}
+		}
+		panics := func(fn func()) (p bool) {
+			defer func() { p = recover() != nil }()
+			fn()
+			return false
+		}
+		free := func(m *model) int { return m.head + m.size - m.reserved - m.start - len(m.data) }
 		for i := 0; i+2 < len(ops); i += 3 {
-			arg := int(binary.LittleEndian.Uint16(ops[i+1 : i+3]))
-			if ops[i]%2 == 0 { // Get
-				size := arg * 2     // up to ~128KB, past the largest class
-				cost := int64(size) // model: next power of two, at least 64, up to 64KB
-				if size <= Large {
-					cost = MinSize
-					for cost < int64(size) {
-						cost *= 2
+			op, arg := ops[i]%10, int(binary.LittleEndian.Uint16(ops[i+1:i+3]))
+			if op == 0 || len(live) == 0 { // Get, sometimes with headroom, up to ~128KB
+				head := 0
+				if arg%3 == 0 {
+					head = arg % 64
+				}
+				size := arg * 2
+				b := p.GetHeadroom(head, size)
+				m := &model{b: b, head: head, size: size, start: head}
+				check(m)
+				live = append(live, m)
+				continue
+			}
+			m := live[arg%len(live)]
+			n := arg % 300
+			mark := bytes.Repeat([]byte{byte(i)}, n)
+			switch op {
+			case 1: // Release
+				m.b.Release()
+				for k, x := range live {
+					if x == m {
+						live = append(live[:k], live[k+1:]...)
+						break
 					}
 				}
-				if got := Capacity(size); int64(got) != cost {
-					t.Fatalf("Capacity(%d) = %d, model %d", size, got, cost)
+				continue
+			case 2: // Write
+				k, err := m.b.Write(mark)
+				want := min(n, free(m))
+				if k != want || (err != nil) != (want < n) {
+					t.Fatalf("Write(%d) = %d, %v; free %d", n, k, err, free(m))
 				}
-				b := p.Get(size)
-				if (b == nil) != (used+cost > max) {
-					t.Fatalf("Get(%d): nil=%v used=%d cost=%d", size, b == nil, used, cost)
+				m.data = append(m.data, mark[:k]...)
+			case 3: // Extend
+				if n > free(m) {
+					if !panics(func() { m.b.Extend(n) }) {
+						t.Fatal("Extend past Cap did not panic")
+					}
+				} else {
+					copy(m.b.Extend(n), mark)
+					m.data = append(m.data, mark...)
 				}
-				if b == nil {
-					continue
+			case 4: // ExtendHeader
+				n %= 40
+				if n > m.start {
+					if !panics(func() { m.b.ExtendHeader(n) }) {
+						t.Fatal("ExtendHeader past the headroom did not panic")
+					}
+				} else {
+					copy(m.b.ExtendHeader(n), mark)
+					m.start -= n
+					m.data = append(append([]byte{}, mark[:n]...), m.data...)
 				}
-				if len(b.B) != size {
-					t.Fatalf("len %d want %d", len(b.B), size)
+			case 5: // Advance
+				k := min(n, len(m.data))
+				m.b.Advance(n)
+				m.start += k
+				m.data = m.data[k:]
+			case 6: // Truncate
+				if n > len(m.data) {
+					if !panics(func() { m.b.Truncate(n) }) {
+						t.Fatal("Truncate past Len did not panic")
+					}
+				} else {
+					m.b.Truncate(n)
+					m.data = m.data[:n]
 				}
-				mark := byte(i)
-				for j := range b.B {
-					b.B[j] = mark
-				}
-				live = append(live, held{b, mark, cost})
-				used += cost
-			} else if len(live) > 0 { // Release
-				k := arg % len(live)
-				h := live[k]
-				for _, v := range h.b.B {
-					if v != h.mark {
-						t.Fatal("held buffer overwritten by another owner")
+			case 7: // Reserve / Unreserve
+				if arg%2 == 0 {
+					if n > free(m) {
+						if !panics(func() { m.b.Reserve(n) }) {
+							t.Fatal("Reserve past FreeLen did not panic")
+						}
+					} else {
+						m.b.Reserve(n)
+						m.reserved += n
+					}
+				} else {
+					if n > m.reserved {
+						if !panics(func() { m.b.Unreserve(n) }) {
+							t.Fatal("Unreserve past the reserve did not panic")
+						}
+					} else {
+						m.b.Unreserve(n)
+						m.reserved -= n
 					}
 				}
-				h.b.Release()
-				used -= h.cost
-				live = append(live[:k], live[k+1:]...)
+			case 8: // Reset
+				m.b.Reset()
+				m.start, m.data, m.reserved = m.head, nil, 0
+			case 9: // ReadFullFrom
+				k, err := m.b.ReadFullFrom(bytes.NewReader(mark), n)
+				if n > free(m) {
+					if k != 0 || err != io.ErrShortBuffer {
+						t.Fatalf("ReadFullFrom past Cap = %d, %v", k, err)
+					}
+				} else {
+					if k != n || err != nil {
+						t.Fatalf("ReadFullFrom(%d) = %d, %v", n, k, err)
+					}
+					m.data = append(m.data, mark...)
+				}
 			}
-			if budget.Used() != used {
-				t.Fatalf("budget %d, model %d", budget.Used(), used)
+			check(m)
+		}
+		// No two held buffers share memory: overwrite each, then verify.
+		for k, m := range live {
+			for j := range m.b.data {
+				m.b.data[j] = byte(k)
 			}
 		}
-		for _, h := range live {
-			h.b.Release()
+		for k, m := range live {
+			for _, v := range m.b.data {
+				if v != byte(k) {
+					t.Fatal("two held buffers share memory")
+				}
+			}
+			m.b.Release()
 		}
-		if budget.Used() != 0 {
-			t.Fatalf("budget not returned: %d", budget.Used())
+		if Outstanding() != before {
+			t.Fatalf("outstanding after releasing all: %d", Outstanding()-before)
 		}
 	})
 }

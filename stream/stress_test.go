@@ -12,7 +12,6 @@ import (
 
 	"github.com/ninepeach/go-netx/buf"
 	"github.com/ninepeach/go-netx/internal/leak"
-	"github.com/ninepeach/go-netx/limit"
 	"github.com/ninepeach/go-netx/stream"
 	"github.com/ninepeach/go-netx/tcp"
 )
@@ -62,7 +61,7 @@ func TestStressIdleReaderMemory(t *testing.T) {
 		return per
 	}
 	base := leak.Take()
-	pool := buf.NewPool(nil)
+	pool := buf.NewPool()
 	none := measure("no reader", func(c *tcp.Conn) { c.Read(make([]byte, 1)) })
 	fixed := measure("bufio 4KB", func(c *tcp.Conn) { bufio.NewReaderSize(c, 4096).Peek(4) })
 	adaptive := measure("stream.Reader 512B", func(c *tcp.Conn) {
@@ -81,13 +80,15 @@ func TestStressIdleReaderMemory(t *testing.T) {
 }
 
 // After a burst of large frames on every connection, grown buffers return
-// to the pool and the budget is back to zero.
+// to the pool: none is still held (counted in netxdebug builds; make
+// stress runs both).
 //
 // Checks: STREAM-03
 func TestStressBurstThenIdleReturnsBuffers(t *testing.T) {
 	const n = 500
-	budget := limit.NewBudget(64 << 20)
-	pool := buf.NewPool(budget)
+	before := buf.Outstanding()
+	held := func() int64 { return buf.Outstanding() - before }
+	pool := buf.NewPool()
 	frame := make([]byte, 10_000)
 	got := make(chan struct{}, n)
 	s, err := tcp.Listen(context.Background(), "tcp", "127.0.0.1:0", func(_ context.Context, c *tcp.Conn) {
@@ -119,7 +120,7 @@ func TestStressBurstThenIdleReturnsBuffers(t *testing.T) {
 	for i := 0; i < n; i++ {
 		<-got
 	}
-	if budget.Used() == 0 {
+	if buf.Debug && held() == 0 {
 		t.Fatal("no buffer was grown by the burst")
 	}
 	for _, c := range clients {
@@ -128,7 +129,7 @@ func TestStressBurstThenIdleReturnsBuffers(t *testing.T) {
 	for i := 0; i < n; i++ {
 		<-got
 	}
-	if budget.Used() != 0 {
-		t.Fatalf("%d bytes still borrowed by %d idle connections", budget.Used(), n)
+	if held() != 0 {
+		t.Fatalf("%d buffers still borrowed by %d idle connections", held(), n)
 	}
 }

@@ -24,9 +24,6 @@ var (
 	// have to be buffered, for example a frame longer than the protocol
 	// allows. The connection should usually be closed.
 	ErrTooLarge = errors.New("stream: data exceeds Max")
-	// ErrNoBuffer is returned when the pool's budget cannot provide a larger
-	// buffer. Buffered data is kept; retry later or close the connection.
-	ErrNoBuffer = errors.New("stream: no buffer within budget")
 	// ErrReleased is returned by a Reader after Release.
 	ErrReleased = errors.New("stream: reader released")
 	// ErrNegativeCount is returned by Peek for a negative count.
@@ -34,8 +31,9 @@ var (
 )
 
 // defaultMax is ReaderOptions.Max when unset. It is fixed at 64KB rather
-// than following buf.Large, so raising the largest pooled class (to 128KB in
-// #35) does not silently double the frame size every Reader accepts.
+// than following buf.Large, so a change to the largest pooled class (#35
+// raised it to 128KB for a while) never silently changes the frame size
+// every Reader accepts.
 const defaultMax = 64 << 10
 
 // ReaderOptions configures a Reader.
@@ -64,16 +62,20 @@ type Reader struct {
 }
 
 // NewReader returns a Reader over src that borrows larger buffers from
-// pool. It panics if IdleSize or Max is negative or Max < IdleSize.
+// pool, or from buf.Default when pool is nil. It panics if IdleSize or Max
+// is negative or Max < IdleSize.
 func NewReader(src io.Reader, pool *buf.Pool, o ReaderOptions) *Reader {
+	if pool == nil {
+		pool = buf.Default
+	}
 	if o.IdleSize == 0 {
 		o.IdleSize = 512
 	}
 	if o.Max == 0 {
 		o.Max = defaultMax
 	}
-	if o.IdleSize < 0 || o.Max < o.IdleSize || pool == nil {
-		panic("stream: invalid ReaderOptions or nil pool")
+	if o.IdleSize < 0 || o.Max < o.IdleSize {
+		panic("stream: invalid ReaderOptions")
 	}
 	idle := make([]byte, o.IdleSize)
 	return &Reader{src: src, pool: pool, idle: idle, data: idle, max: o.Max}
@@ -231,15 +233,13 @@ func (r *Reader) grow(need int) error {
 		return ErrTooLarge
 	}
 	b := r.pool.Get(size)
-	if b == nil {
-		return ErrNoBuffer
-	}
-	r.w = copy(b.B, r.data[r.r:r.w])
+	space := b.FreeBytes() // the whole buffer: b is empty, Cap size
+	r.w = copy(space, r.data[r.r:r.w])
 	r.r = 0
 	if r.big != nil {
 		r.big.Release()
 	}
-	r.big, r.data = b, b.B
+	r.big, r.data = b, space
 	return nil
 }
 

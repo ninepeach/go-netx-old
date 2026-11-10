@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/ninepeach/go-netx/buf"
-	"github.com/ninepeach/go-netx/limit"
 )
 
 // A random stream split into random chunks, consumed by a random sequence
@@ -33,8 +32,8 @@ func readerModel(t *testing.T, data, cuts, ops []byte) {
 		parts = append(parts, rest[:n])
 		rest = rest[n:]
 	}
-	budget := limit.NewBudget(1 << 20)
-	r := NewReader(&chunks{parts: parts}, buf.NewPool(budget), ReaderOptions{IdleSize: 64, Max: 8192})
+	held := heldSince()
+	r := NewReader(&chunks{parts: parts}, buf.NewPool(), ReaderOptions{IdleSize: 64, Max: 8192})
 	pos := 0 // bytes of data handed out so far
 	take := func(got []byte) {
 		if pos+len(got) > len(data) || !bytes.Equal(got, data[pos:pos+len(got)]) {
@@ -78,8 +77,8 @@ func readerModel(t *testing.T, data, cuts, ops []byte) {
 		case 6: // Shrink never loses buffered data and frees only when empty
 			before := append([]byte(nil), r.Buffered()...)
 			shrunk := r.Shrink()
-			if !bytes.Equal(r.Buffered(), before) || (shrunk && (len(before) != 0 || budget.Used() != 0)) {
-				t.Fatalf("Shrink=%v with %d buffered, budget %d", shrunk, len(before), budget.Used())
+			if !bytes.Equal(r.Buffered(), before) || (shrunk && (len(before) != 0 || held() != 0)) {
+				t.Fatalf("Shrink=%v with %d buffered, %d buffers held", shrunk, len(before), held())
 			}
 		}
 		if r.Len() > 8192 {
@@ -87,7 +86,7 @@ func readerModel(t *testing.T, data, cuts, ops []byte) {
 		}
 	}
 	r.Release()
-	if budget.Used() != 0 {
-		t.Fatalf("budget holds %d after Release", budget.Used())
+	if held() != 0 {
+		t.Fatalf("%d buffers held after Release", held())
 	}
 }

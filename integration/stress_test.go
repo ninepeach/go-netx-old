@@ -17,7 +17,6 @@ import (
 	"github.com/ninepeach/go-netx/buf"
 	"github.com/ninepeach/go-netx/flow"
 	"github.com/ninepeach/go-netx/internal/leak"
-	"github.com/ninepeach/go-netx/limit"
 	"github.com/ninepeach/go-netx/queue"
 	"github.com/ninepeach/go-netx/udp"
 )
@@ -31,7 +30,7 @@ func stressDuration() time.Duration {
 
 // The full gateway composition under sustained churn: clients keep
 // appearing and vanishing, flows expire, per-flow senders start and stop,
-// queues overflow. Afterwards nothing is left behind: no buffers, no budget,
+// queues overflow. Afterwards nothing is left behind: no buffers,
 // no flows, no goroutines, no sockets.
 //
 // Checks: INT-09
@@ -39,8 +38,8 @@ func TestStressGatewayLongRun(t *testing.T) {
 	base := leak.Take()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	budget := limit.NewBudget(4 << 20)
-	pool := buf.NewPool(budget)
+	before := buf.Outstanding()
+	pool := buf.NewPool()
 	var senders sync.WaitGroup
 	var conn *udp.Conn
 	flows := flow.NewTable(flow.TableOptions[netip.AddrPort, *peer]{
@@ -58,7 +57,7 @@ func TestStressGatewayLongRun(t *testing.T) {
 				if err != nil {
 					return
 				}
-				_ = conn.WriteTo(b.B, to)
+				_ = conn.WriteTo(b.Bytes(), to)
 				b.Release()
 			}
 		}()
@@ -67,7 +66,7 @@ func TestStressGatewayLongRun(t *testing.T) {
 	conn, err := udp.Listen(ctx, "udp", "127.0.0.1:0", func(_ *udp.Conn, p *udp.Packet) {
 		f, _ := flows.GetOrOpen(p.From, func() *peer { return newPeer(p.From) })
 		f.Touch() // traffic keeps the flow from idle expiry
-		if b := pool.Copy(p.Data); b != nil && !f.Value.out.Push(b) {
+		if b := pool.Copy(p.Data); !f.Value.out.Push(b) {
 			b.Release()
 		}
 	}, udp.Options{Readers: 2})
@@ -121,11 +120,8 @@ func TestStressGatewayLongRun(t *testing.T) {
 	if flows.Len() != 0 {
 		t.Fatalf("%d flows left", flows.Len())
 	}
-	if budget.Used() != 0 {
-		t.Fatalf("budget holds %d bytes", budget.Used())
-	}
-	if buf.Debug && buf.Outstanding() != 0 {
-		t.Fatalf("%d buffers leaked", buf.Outstanding())
+	if held := buf.Outstanding() - before; held != 0 {
+		t.Fatalf("%d buffers leaked", held)
 	}
 	if err := base.Check(5*time.Second, 2); err != nil {
 		t.Fatal(err)

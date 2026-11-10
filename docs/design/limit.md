@@ -52,7 +52,8 @@ already acquired, so it never leaks a permit.
 - `tcp.Options.Admit` takes any `Limiter` (total connections, rate of new
   connections, or `All` of both).
 - `tcp.Options.MaxConnsPerIP` uses a `PerKey[netip.Addr]`.
-- `buf.Pool` charges buffer capacity to a `Budget`.
+- A gateway can bound the bytes it holds with a `Budget` reserved around
+  `buf.Get`; buf itself does not limit (D-24).
 
 ## 5. Decisions
 

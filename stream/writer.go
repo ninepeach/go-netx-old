@@ -37,8 +37,8 @@ func NewWriter(dst io.Writer) *Writer { return &Writer{dst: dst} }
 // Add queues b for the next Flush and takes ownership of it.
 func (w *Writer) Add(b *buf.Buf) {
 	w.held = append(w.held, b)
-	w.vec = append(w.vec, b.B)
-	w.size += len(b.B)
+	w.vec = append(w.vec, b.Bytes())
+	w.size += b.Len()
 }
 
 // AddShared queues p for the next Flush without taking ownership: p is
@@ -92,10 +92,7 @@ func (w *Writer) Flush() (int64, error) {
 // Discard drops everything queued without writing it, releasing the owned
 // buffers; shared data is only forgotten.
 func (w *Writer) Discard() {
-	for i, b := range w.held {
-		b.Release()
-		w.held[i] = nil
-	}
+	buf.ReleaseMulti(w.held)
 	w.held = w.held[:0]
 	clear(w.vec) // drop references to released and shared memory
 	w.vec = w.vec[:0]

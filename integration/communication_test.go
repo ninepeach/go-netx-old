@@ -90,7 +90,7 @@ type peer struct {
 func TestUDPGatewayComposition(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pool := buf.NewPool(limit.NewBudget(1 << 20))
+	pool := buf.NewPool()
 	var senders sync.WaitGroup
 
 	var conn *udp.Conn
@@ -111,7 +111,7 @@ func TestUDPGatewayComposition(t *testing.T) {
 				if err != nil {
 					return
 				}
-				_ = conn.WriteTo(b.B, to)
+				_ = conn.WriteTo(b.Bytes(), to)
 				b.Release()
 			}
 		}()
@@ -120,11 +120,8 @@ func TestUDPGatewayComposition(t *testing.T) {
 
 	conn, err := udp.Listen(ctx, "udp", "127.0.0.1:0", func(_ *udp.Conn, p *udp.Packet) {
 		f, _ := flows.GetOrOpen(p.From, func() *peer { return newPeer(p.From) })
-		f.Touch()              // a datagram arrived: record the traffic for idle expiry
-		b := pool.Copy(p.Data) // borrowed → owned
-		if b == nil {
-			return // over budget: drop
-		}
+		f.Touch()                 // a datagram arrived: record the traffic for idle expiry
+		b := pool.Copy(p.Data)    // borrowed → owned
 		if !f.Value.out.Push(b) { // transfer failed: still ours
 			b.Release()
 		}

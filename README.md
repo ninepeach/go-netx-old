@@ -71,7 +71,7 @@ defer r.Release()
 for {
 	hdr, err := r.Peek(4)                // waits on a 512B buffer while idle
 	if err != nil {
-		return err                       // io.EOF, ErrNoBuffer, ...
+		return err                       // io.EOF, a read error, ...
 	}
 	size := int(binary.BigEndian.Uint32(hdr))
 	frame, err := r.Peek(4 + size)       // grows from the pool only now
@@ -120,8 +120,8 @@ Measured on 2 vCPU, Linux, Go 1.24; details, method and tuning in
 - **IM gateway (TCP, long-lived, mostly idle):** `tcp.Listen` with
   `Admit` + `MaxConnsPerIP` + `KeepAlive`; `stream.Reader` with `Max` set to
   the largest frame and `Reader.Shrink()` after large messages;
-  `stream.Writer` with a write deadline before each `Flush`; `buf.Pool`
-  with a `limit.Budget`.
+  `stream.Writer` with a write deadline before each `Flush`; memory bounded
+  by connections × `Max` (buf itself does not limit, D-24).
 - **Game gateway (UDP sessions):** `udp.Listen` with `Readers` and
   `ReusePort`; a `flow.Table` keyed by `netip.AddrPort` with `IdleTimeout`
   and `MaxFlows`, `GetAndTouch` per packet and `GetOrOpen` for new
