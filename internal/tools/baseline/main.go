@@ -24,10 +24,19 @@ import (
 	"time"
 
 	"github.com/ninepeach/go-netx/buf"
-	"github.com/ninepeach/go-netx/limit"
 	"github.com/ninepeach/go-netx/stream"
 	"github.com/ninepeach/go-netx/tcp"
 )
+
+// held reports buffers obtained and not released. buf only counts them in
+// netxdebug builds (go run -tags netxdebug ./internal/tools/baseline),
+// which also poison released memory and so are slower.
+func held() string {
+	if !buf.Debug {
+		return "n/a (build with -tags netxdebug)"
+	}
+	return strconv.FormatInt(buf.Outstanding(), 10)
+}
 
 func rssKB() int64 {
 	b, _ := os.ReadFile("/proc/self/status")
@@ -57,8 +66,7 @@ func snap() memSnap {
 
 // idle: n connections, each server handler blocked in a read.
 func idle(n int, mode string) {
-	budget := limit.NewBudget(1 << 30)
-	pool := buf.NewPool(budget)
+	pool := buf.NewPool()
 	var ready sync.WaitGroup
 	ready.Add(n)
 	h := func(_ context.Context, c *tcp.Conn) {
@@ -114,11 +122,11 @@ func idle(n int, mode string) {
 	dialDur := time.Since(start)
 	after := snap()
 	per := func(a, b uint64) float64 { return float64(int64(a)-int64(b)) / float64(n) }
-	fmt.Printf("idle mode=%-7s conns=%d connect=%v (%.0f conn/s) heap/conn=%.0fB stack/conn=%.0fB heap+stack/conn=%.0fB rss/conn(both ends)=%.0fB goroutines=%d pool=%dB\n",
+	fmt.Printf("idle mode=%-7s conns=%d connect=%v (%.0f conn/s) heap/conn=%.0fB stack/conn=%.0fB heap+stack/conn=%.0fB rss/conn(both ends)=%.0fB goroutines=%d buffers held=%s\n",
 		mode, n, dialDur.Round(time.Millisecond), float64(n)/dialDur.Seconds(),
 		per(after.heap, before.heap), per(after.stack, before.stack),
 		per(after.heap+after.stack, before.heap+before.stack),
-		float64(after.rss-before.rss)*1024/float64(n), after.g, budget.Used())
+		float64(after.rss-before.rss)*1024/float64(n), after.g, held())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t0 := time.Now()
 	for _, c := range conns {
@@ -132,7 +140,7 @@ func idle(n int, mode string) {
 // echo: c clients, each sending length-prefixed frames of size bytes and
 // waiting for the echo, for dur. Server uses stream.Reader + Writer.
 func echo(clients, size int, dur time.Duration) {
-	pool := buf.NewPool(nil)
+	pool := buf.NewPool()
 	h := func(_ context.Context, c *tcp.Conn) {
 		r := stream.NewReader(c, pool, stream.ReaderOptions{})
 		defer r.Release()
@@ -203,8 +211,7 @@ func echo(clients, size int, dur time.Duration) {
 // slow: one client never reads while normal clients run request/response.
 // The server pushes 256KB responses with a write deadline.
 func slow(normal int, dur time.Duration) {
-	budget := limit.NewBudget(1 << 30)
-	pool := buf.NewPool(budget)
+	pool := buf.NewPool()
 	payload := make([]byte, 256<<10)
 	var slowErr atomic.Value
 	var slowAt atomic.Int64
@@ -224,7 +231,7 @@ func slow(normal int, dur time.Duration) {
 				for {
 					c.SetWriteDeadline(time.Now().Add(2 * time.Second))
 					b := pool.Get(len(payload))
-					copy(b.B, payload)
+					b.Write(payload)
 					w.Add(b)
 					if _, err := w.Flush(); err != nil {
 						slowErr.Store(err.Error())
@@ -276,8 +283,8 @@ func slow(normal int, dur time.Duration) {
 	sort.Slice(lat, func(a, b int) bool { return lat[a] < lat[b] })
 	q := func(p float64) time.Duration { return lat[int(p*float64(len(lat)-1))] }
 	time.Sleep(100 * time.Millisecond)
-	fmt.Printf("slow: 1 non-reading client + %d normal for %v: normal %.0f req/s p50=%v p99=%v; slow handler: %v after %v; pool in use now %dB\n",
-		normal, dur, float64(len(lat))/dur.Seconds(), q(.5).Round(time.Microsecond), q(.99).Round(time.Microsecond), slowErr.Load(), time.Duration(slowAt.Load()).Round(time.Millisecond), budget.Used())
+	fmt.Printf("slow: 1 non-reading client + %d normal for %v: normal %.0f req/s p50=%v p99=%v; slow handler: %v after %v; buffers held now %s\n",
+		normal, dur, float64(len(lat))/dur.Seconds(), q(.5).Round(time.Microsecond), q(.99).Round(time.Microsecond), slowErr.Load(), time.Duration(slowAt.Load()).Round(time.Millisecond), held())
 
 	// Shutdown while a handler is blocked writing to a non-reading client.
 	sc2, _ := net.Dial("tcp", s.Addr().String())
@@ -289,8 +296,8 @@ func slow(normal int, dur time.Duration) {
 	err = s.Shutdown(ctx)
 	cancel()
 	time.Sleep(50 * time.Millisecond)
-	fmt.Printf("  Shutdown(500ms) with a handler blocked on a slow client: returned after %v (%v); pool in use after %dB\n",
-		time.Since(t0).Round(time.Millisecond), err, budget.Used())
+	fmt.Printf("  Shutdown(500ms) with a handler blocked on a slow client: returned after %v (%v); buffers held after %s\n",
+		time.Since(t0).Round(time.Millisecond), err, held())
 	sc.Close()
 }
 

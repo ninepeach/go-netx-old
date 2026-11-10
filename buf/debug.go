@@ -27,8 +27,8 @@ func (b *Buf) onRelease() {
 	}
 	b.live = false
 	outstanding.Add(-1)
-	for i := range b.full {
-		b.full[i] = Poison
+	for i := range b.data {
+		b.data[i] = Poison
 	}
 }
 

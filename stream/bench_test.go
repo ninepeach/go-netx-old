@@ -37,7 +37,7 @@ func sink(b *testing.B) (*tcp.Conn, func()) {
 //
 // Checks: STREAM-15
 func BenchmarkBacklog(b *testing.B) {
-	pool := buf.NewPool(nil)
+	pool := buf.NewPool()
 	for _, batch := range []int{1, 8, 32} {
 		msg := make([]byte, 64)
 		b.Run(fmt.Sprintf("batch=%d/write", batch), func(b *testing.B) {
@@ -48,7 +48,7 @@ func BenchmarkBacklog(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				for j := 0; j < batch; j++ {
 					m := pool.Copy(msg)
-					c.Write(m.B)
+					c.Write(m.Bytes())
 					m.Release()
 				}
 			}

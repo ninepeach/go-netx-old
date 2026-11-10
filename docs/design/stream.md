@@ -33,7 +33,7 @@ func (*Reader) Discard(n int) int          // n <= 0 consumes nothing
 func (*Reader) Read(p []byte) (int, error) // io.Reader
 func (*Reader) Shrink() bool               // empty and grown: back to IdleSize now
 func (*Reader) Release()
-var ErrTooLarge, ErrNoBuffer, ErrReleased
+var ErrTooLarge, ErrReleased, ErrNegativeCount
 
 func NewWriter(dst io.Writer) *Writer
 func (*Writer) Add(b *buf.Buf)            // takes ownership
@@ -72,9 +72,9 @@ its whole life and borrows a larger one from the pool only when needed:
 
 **Limits.** `Peek(n)` with `n > Max`, or growth past `Max`, returns
 `ErrTooLarge`: a frame larger than the protocol allows should close the
-connection rather than grow memory. When the pool's budget cannot supply a
-larger buffer, `ErrNoBuffer` is returned and buffered data is kept intact,
-so the caller can retry later or close.
+connection rather than grow memory. `Max` is also what bounds a
+connection's memory: buf does not limit (D-24), so a Reader can always get
+a larger buffer up to `Max`. A nil pool means `buf.Default`.
 
 **Errors.** A read that returns data and an error hands the data out first;
 the error is sticky and returned on the next read. Reads that return no

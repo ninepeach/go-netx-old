@@ -19,7 +19,7 @@ var _ stream.BuffersWriter = (*tcp.Conn)(nil)
 //
 // Checks: STREAM-14
 func TestConnWriteBuffers(t *testing.T) {
-	pool := buf.NewPool(nil)
+	pool := buf.NewPool()
 	var want []byte
 	parts := make([][]byte, 50)
 	for i := range parts {

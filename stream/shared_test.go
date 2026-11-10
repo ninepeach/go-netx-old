@@ -9,13 +9,12 @@ import (
 	"testing"
 
 	"github.com/ninepeach/go-netx/buf"
-	"github.com/ninepeach/go-netx/limit"
 )
 
 // Checks: STREAM-18
 func TestAddSharedInterleavesWithoutReleasing(t *testing.T) {
-	budget := limit.NewBudget(1 << 20)
-	pool := buf.NewPool(budget)
+	held := heldSince()
+	pool := buf.NewPool()
 	shared := []byte("CONFIG-v7")
 	orig := append([]byte(nil), shared...)
 	for _, dst := range []interface {
@@ -36,8 +35,8 @@ func TestAddSharedInterleavesWithoutReleasing(t *testing.T) {
 		if got := string(dst.Bytes()); got != "hdr|CONFIG-v7|tail" {
 			t.Fatalf("%T: wrote %q", dst, got)
 		}
-		if budget.Used() != 0 {
-			t.Fatalf("owned buffers not released: %d", budget.Used())
+		if held() != 0 {
+			t.Fatalf("owned buffers not released: %d", held())
 		}
 		if !bytes.Equal(shared, orig) {
 			t.Fatal("shared data changed (released or poisoned?)")
@@ -68,8 +67,8 @@ func TestAddSharedInterleavesWithoutReleasing(t *testing.T) {
 
 // Checks: STREAM-19
 func TestAddSharedOnFailureAndDiscard(t *testing.T) {
-	budget := limit.NewBudget(1 << 20)
-	pool := buf.NewPool(budget)
+	held := heldSince()
+	pool := buf.NewPool()
 	shared := []byte("shared")
 	fail := &countingWriter{err: errors.New("broken pipe")}
 	w := NewWriter(fail)
@@ -81,8 +80,8 @@ func TestAddSharedOnFailureAndDiscard(t *testing.T) {
 	w.AddShared(shared)
 	w.Add(pool.Copy([]byte("b")))
 	w.Discard()
-	if n, size := w.Pending(); budget.Used() != 0 || n != 0 || size != 0 {
-		t.Fatalf("after failure and Discard: used=%d pending=%d/%d", budget.Used(), n, size)
+	if n, size := w.Pending(); held() != 0 || n != 0 || size != 0 {
+		t.Fatalf("after failure and Discard: used=%d pending=%d/%d", held(), n, size)
 	}
 	if string(shared) != "shared" {
 		t.Fatal("shared data changed")

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/ninepeach/go-netx/buf"
-	"github.com/ninepeach/go-netx/limit"
 )
 
 func bufs(pool *buf.Pool, parts ...string) []*buf.Buf {
@@ -47,8 +46,8 @@ func (v *vecWriter) WriteBuffers(b *net.Buffers) (int64, error) {
 
 // Checks: STREAM-10
 func TestFlushWritesInOrderAndReleases(t *testing.T) {
-	budget := limit.NewBudget(1 << 20)
-	pool := buf.NewPool(budget)
+	held := heldSince()
+	pool := buf.NewPool()
 	dst := &vecWriter{}
 	w := NewWriter(dst)
 	for _, b := range bufs(pool, "one,", "two,", "three") {
@@ -61,8 +60,8 @@ func TestFlushWritesInOrderAndReleases(t *testing.T) {
 	if err != nil || n != 13 || dst.String() != "one,two,three" {
 		t.Fatalf("Flush: %d %v %q", n, err, dst.String())
 	}
-	if budget.Used() != 0 {
-		t.Fatalf("buffers not released: %d", budget.Used())
+	if held() != 0 {
+		t.Fatalf("buffers not released: %d", held())
 	}
 	if n, _ := w.Pending(); n != 0 {
 		t.Fatal("queue not cleared")
@@ -74,8 +73,8 @@ func TestFlushWritesInOrderAndReleases(t *testing.T) {
 
 // Checks: STREAM-11
 func TestFlushFailureAndDiscardRelease(t *testing.T) {
-	budget := limit.NewBudget(1 << 20)
-	pool := buf.NewPool(budget)
+	held := heldSince()
+	pool := buf.NewPool()
 	boom := errors.New("broken pipe")
 	w := NewWriter(&countingWriter{err: boom})
 	for _, b := range bufs(pool, "a", "b", "c") {
@@ -84,8 +83,8 @@ func TestFlushFailureAndDiscardRelease(t *testing.T) {
 	if _, err := w.Flush(); err != boom {
 		t.Fatalf("Flush error: %v", err)
 	}
-	if budget.Used() != 0 {
-		t.Fatalf("failed Flush kept %d bytes", budget.Used())
+	if held() != 0 {
+		t.Fatalf("failed Flush kept %d bytes", held())
 	}
 	ok := &countingWriter{}
 	w2 := NewWriter(ok)
@@ -93,14 +92,14 @@ func TestFlushFailureAndDiscardRelease(t *testing.T) {
 		w2.Add(b)
 	}
 	w2.Discard()
-	if budget.Used() != 0 || ok.writes != 0 {
-		t.Fatalf("Discard: used=%d writes=%d", budget.Used(), ok.writes)
+	if held() != 0 || ok.writes != 0 {
+		t.Fatalf("Discard: used=%d writes=%d", held(), ok.writes)
 	}
 }
 
 // Checks: STREAM-12
 func TestSingleBufferUsesWriteAndFlushIsAllocFree(t *testing.T) {
-	pool := buf.NewPool(nil)
+	pool := buf.NewPool()
 	dst := &vecWriter{}
 	w := NewWriter(dst)
 	w.Add(pool.Copy([]byte("solo")))
@@ -135,7 +134,7 @@ func TestSingleBufferUsesWriteAndFlushIsAllocFree(t *testing.T) {
 
 // Checks: STREAM-13
 func TestBuffersWriterPreferredPlainWriterFallsBack(t *testing.T) {
-	pool := buf.NewPool(nil)
+	pool := buf.NewPool()
 	vec := &vecWriter{}
 	w := NewWriter(vec)
 	for _, b := range bufs(pool, "a", "b", "c") {
@@ -188,8 +187,8 @@ func (s *shortVecWriter) Write(p []byte) (int, error) { return s.Buffer.Write(p)
 
 // Checks: STREAM-21
 func TestFlushShortWriteIsAnError(t *testing.T) {
-	budget := limit.NewBudget(1 << 20)
-	pool := buf.NewPool(budget)
+	held := heldSince()
+	pool := buf.NewPool()
 	cases := []struct {
 		name  string
 		dst   io.Writer
@@ -209,8 +208,8 @@ func TestFlushShortWriteIsAnError(t *testing.T) {
 		if !errors.Is(err, io.ErrShortWrite) {
 			t.Fatalf("%s: Flush = %d, %v; want io.ErrShortWrite", c.name, n, err)
 		}
-		if budget.Used() != 0 {
-			t.Fatalf("%s: short write kept %d bytes", c.name, budget.Used())
+		if held() != 0 {
+			t.Fatalf("%s: short write kept %d bytes", c.name, held())
 		}
 		if k, size := w.Pending(); k != 0 || size != 0 {
 			t.Fatalf("%s: queue not cleared: %d,%d", c.name, k, size)

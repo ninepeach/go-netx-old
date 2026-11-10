@@ -6,10 +6,10 @@ import "testing"
 
 // Checks: BUF-17
 func TestReleasePoisonsInDebug(t *testing.T) {
-	p := NewPool(nil)
+	p := NewPool()
 	b := p.Get(100)
-	copy(b.B, "secret data from the last owner")
-	stale := b.B[:cap(b.B)] // a reference kept past Release (a bug)
+	b.WriteString("secret data from the last owner")
+	stale := b.data // a reference kept past Release (a bug)
 	b.Release()
 	for i, v := range stale {
 		if v != Poison {
@@ -20,7 +20,7 @@ func TestReleasePoisonsInDebug(t *testing.T) {
 	// byte it does not write itself.
 	c := p.Get(100)
 	defer c.Release()
-	if c.B[0] != Poison && &c.B[0] == &stale[0] {
+	if fresh := c.FreeBytes(); fresh[0] != Poison && &fresh[0] == &stale[0] {
 		t.Fatal("reused buffer still holds old data")
 	}
 }

@@ -327,23 +327,28 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 
 | ID | P | 检查点 | 状态 | 测试 | 说明 |
 |---|---|---|---|---|---|
-| BUF-01 | P0 | 按大小选到正确的档位（2 的幂，64B…64KB）；超大请求不进池 | ✅ | `buf.GetClasses` |  |
-| BUF-02 | P0 | `len(B)` 等于请求的大小 | ✅ | `buf.GetClasses` |  |
-| BUF-03 | P0 | `Copy` 不与源数据共享内存 | ✅ | `buf.Copy` |  |
-| BUF-04 | P0 | 预算按容量扣除，释放后归还，超出时 Get 返回 nil | ✅ | `buf.BudgetChargesCapacity`<br>`buf.BudgetRejectsLargeBufferWithoutPartialCharge`<br>`buf.ReleaseClearsViewAndRefundsUnpooledCapacity` |  |
+| BUF-01 | P0 | 按大小选到正确的档位（2 的幂，64B…64KB，头部空间计入大小）；超大请求不进池 | ✅ | `buf.GetClasses` |  |
+| BUF-02 | P0 | `Get(n)` 返回空 buffer：`Len` 为 0，`Cap` 和 `FreeLen` 等于 n（不是档位大小） | ✅ | `buf.GetClasses` |  |
+| BUF-03 | P0 | `Copy` 不与源数据共享内存，`Cap` 等于数据长度 | ✅ | `buf.Copy` |  |
+| BUF-04 | P0 | 预算按容量扣除，释放后归还，超出时 Get 返回 nil | ➖ |  | D-24：buf 不再做内存限制，`Get` 不返回 nil；应用在 `Get` 外面用 `limit.Budget`（INT-07） |
 | BUF-05 | P1 | 在 `netxdebug` 下重复 Release 会 panic | ✅ | `buf.DoubleReleasePanicsInDebug` |  |
 | BUF-06 | P1 | 在 `netxdebug` 下 `Outstanding` 能反映泄漏 | ✅ | `integration.UDPGatewayComposition` |  |
 | BUF-07 | P1 | 释放后继续使用的行为 | ➖ |  | 约定为调用方的 bug，正式构建中无法检测 |
 | BUF-08 | P1 | 并发 Get 不会返回同一块正在使用的内存 | ✅ | `buf.ConcurrentGetNeverShares` |  |
 | BUF-09 | P1 | 负数大小时 panic | ✅ | `buf.GetNegativeSizePanics` |  |
-| BUF-10 | P1 | 扩容、Reset | ➖ |  | 没有这两个 API，Buf 的大小固定 |
+| BUF-10 | P1 | `Reset` 清空数据、恢复原始头部空间和容量并取消 `Reserve`；不支持扩容 | ✅ | `buf.HeadroomAndCursors` | 超过 `Cap` 的需求要换更大的 buffer |
 | BUF-11 | P2 | GC 回收池中对象后，正确性不受影响 | ✅ | `buf.PoolCorrectAcrossGC` |  |
-| BUF-12 | P2 | 热路径零分配 | ✅ | `buf.BenchmarkGetReleaseBySize`<br>`buf.BenchmarkGetRelease` |  |
-| BUF-13 | P1 | Release 后 `B` 被置为 nil，避免继续使用旧的切片 | ✅ | `buf.ReleaseClearsViewAndRefundsUnpooledCapacity` |  |
-| BUF-14 | P1 | 预算不足时不会先扣掉一部分 | ✅ | `buf.BudgetRejectsLargeBufferWithoutPartialCharge` |  |
-| BUF-15 | P0 | 档位都是 2 的幂，共 11 档（64B…64KB，D-26）；容量不小于请求、从 64B 起小于请求的 2 倍；`Capacity(n)` 与 `Get(n)` 的容量和预算扣除一致 | ✅ | `buf.PowerOfTwoClasses` |  |
-| BUF-16 | P1 | 对 nil 调用 `Release` 什么都不做（预算不足时 Get 返回的 nil 可以直接 Release） | ✅ | `buf.ReleaseNilIsNoop` |  |
+| BUF-12 | P2 | 热路径零分配 | ✅ | `buf.BenchmarkGetReleaseBySize`<br>`buf.BenchmarkGetRelease`<br>`buf.BenchmarkHeaderPath` |  |
+| BUF-13 | P1 | Release 后 `Len`、`Cap` 归零；池化 buffer 再次取出时是干净的空 buffer；超过 64KB 的不进池 | ✅ | `buf.ReleaseResetsAndDropsUnpooled` |  |
+| BUF-14 | P1 | 预算不足时不会先扣掉一部分 | ➖ |  | D-24：buf 没有预算 |
+| BUF-15 | P0 | 档位都是 2 的幂，共 11 档（64B…64KB，D-26）；内存不小于请求、从 64B 起小于请求的 2 倍；`Capacity(n)` 与 `Get(n)` 实际占用的内存一致；头部空间计入档位 | ✅ | `buf.PowerOfTwoClasses` |  |
+| BUF-16 | P1 | 对 nil 调用 `Release` 什么都不做 | ✅ | `buf.ReleaseNilIsNoop` |  |
 | BUF-17 | P1 | `netxdebug` 下 Release 把整块缓冲填成 `Poison`，释放后的读取和下一个持有者看不到旧数据 | ✅ | `buf.ReleasePoisonsInDebug` | 仅 netxdebug 构建 |
+| BUF-18 | P1 | 包级 `Get`、`GetHeadroom`、`Copy` 使用 `buf.Default` | ✅ | `buf.DefaultPool` |  |
+| BUF-19 | P0 | 游标操作：`ExtendHeader` 从头部空间往前加数据且不移动已有数据，超过头部空间 panic；`Reserve` 预留尾部后写入在预留前停止，`Unreserve` 归还且不能超过原始大小；`Advance` 剥掉头部（超过 Len 时清空、负数 panic）；`Truncate` 超过 Len panic；`Extend` 超过 Cap panic | ✅ | `buf.HeadroomAndCursors` | 与 sing `common/buf` 同名同语义 |
+| BUF-20 | P0 | 写入与读取：`Write`/`WriteString`/`WriteByte` 写满后返回 `io.ErrShortBuffer`；`ReadOnceFrom` 满时不读；`ReadFullFrom` 超过空闲空间时不读、短读保留已读数据并返回 `io.ErrUnexpectedEOF`；`WriteTo` 不消费数据；`FreeBytes` + `Extend` 直接读入 | ✅ | `buf.WriteAndReadMethods` |  |
+| BUF-21 | P1 | `ReadPacketFrom` 读一个数据报到空闲空间并返回来源地址，满时返回 `io.ErrShortBuffer` | ✅ | `buf.ReadPacketFrom` |  |
+| BUF-22 | P1 | `As`/`With` 包装调用方的内存：不进池、不计入 `Outstanding`，Release 只是丢弃引用、可重复调用、不改调用方内存；`With` 写入调用方内存 | ✅ | `buf.UnmanagedWrappers` |  |
 
 ## 8.5 stream：流式读写
 
@@ -355,7 +360,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | STREAM-02 | P0 | `Discard` 消费数据；`Read` 符合 io.Reader 语义 | ✅ | `stream.DiscardAndRead` |  |
 | STREAM-03 | P1 | 空闲时只持有 IdleSize 的小缓冲区；需要时升级到更大档位；数据处理完且流量小时退回，大缓冲区还给池（预算归零） | ✅ | `stream.GrowsWhenNeededAndShrinksWhenQuiet`<br>`stream.StressBurstThenIdleReturnsBuffers` | 单元测试覆盖升级和退回；压测中 500 个连接经历大帧后全部退回，预算归零 |
 | STREAM-04 | P1 | 需要的数据超过 Max 时返回 `ErrTooLarge`，不会无限增长 | ✅ | `stream.MaxBoundsBuffering` |  |
-| STREAM-05 | P1 | 池的预算不足时返回 `ErrNoBuffer`，已缓冲的数据不丢失；预算恢复后继续工作 | ✅ | `stream.BudgetExhaustedKeepsData` |  |
+| STREAM-05 | P1 | 池的预算不足时返回 `ErrNoBuffer`，已缓冲的数据不丢失；预算恢复后继续工作 | ➖ |  | D-24：buf 不再限制内存，`ErrNoBuffer` 已删除；单连接内存由 `Max` 限制（STREAM-04） |
 | STREAM-06 | P1 | 底层读错误（包括 EOF）正确传递，已缓冲的数据先交给调用方 | ✅ | `stream.SourceErrorsAfterData` |  |
 | STREAM-07 | P1 | `Release` 归还所有缓冲区，之后的调用返回错误；选项非法时构造函数 panic | ✅ | `stream.ReleaseAndOptions` |  |
 | STREAM-08 | P2 | 大量空闲连接下，每个连接的缓冲区开销（压测中实测，并与固定 4KB 缓冲区对比） | ✅ | `stream.StressIdleReaderMemory` | 实测（4000 个空闲连接）：每个连接比固定 4KB 的 bufio.Reader 少约 3.6KB，比不用缓冲区多约 430 字节 |
@@ -430,7 +435,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | INT-04 | P1 | 在 `netxdebug` 下，整条链路零缓冲区泄漏 | ✅ | `integration.UDPGatewayComposition` |  |
 | INT-05 | P1 | TCP + Flow：连接关闭时清理对应的 flow | ✅ | `integration.TCPFlowLifecycle` |  |
 | INT-06 | P1 | 队列满时 DropOldest 释放缓冲区，不泄漏 | ✅ | `integration.FullQueueReleasesEvictedBuffers`<br>`integration.UDPGatewayComposition` |  |
-| INT-07 | P1 | Budget 耗尽时丢包，恢复后继续正常工作 | ✅ | `integration.BudgetExhaustionDropsThenRecovers` |  |
+| INT-07 | P1 | 网关在 buf 外用自己的 `limit.Budget` 限制持有的内存：预算耗尽时丢包，释放后恢复正常 | ✅ | `integration.BudgetExhaustionDropsThenRecovers` | D-24 推荐的用法 |
 | INT-08 | P1 | TCP 在 drain 期间，长连接收到 `Draining` 信号后主动退出 | ✅ | `integration.TCPDrainingGoAway` |  |
 | INT-09 | P2 | 长时间运行，FD、内存、goroutine 都不泄漏 | ✅ | `integration.StressGatewayLongRun` | 压测，`make stress`；时长用 `NETX_STRESS_SECONDS` 设置，默认 3 秒，已跑过 15 秒 |
 | INT-10 | P0 | 在 `OnStart` 中请求停止、任何传输的 `Serve` 还没开始时，`LoopContext` 返回 nil，`OnError` 不被调用；覆盖 tcp、udp 和 `Group(tcp, udp)`，每种 50 次；另一组用包装让 `Serve` 一定在 `Shutdown` 返回之后才开始 | ✅ | `integration.StopBeforeServeIsCleanExit` | 修复前返回 `tcp: closed` / `udp: closed`（实测 200 次中 200 / 199 次）；REG-34 |
@@ -486,7 +491,7 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | D-02 | 收发统一使用 `MaxDatagram = 65000` | 收发规则一致；超过 65000 的包极少见，代价是这类包会被计入 Truncated |
 | D-03 | UDP handler 没有 ctx，也不能被中断 | 换取零分配、无额外 goroutine；需要等待的工作交给 Gateway 的队列 |
 | D-04 | `Concurrency.TryAcquire` 不阻塞 | Admission 只回答“现在能不能进”，排队属于 queue 的职责 |
-| D-05 | Buf 的预算只统计正在使用的内存 | sync.Pool 中闲置的内存会被 GC 回收，无法也不需要计入 |
+| D-05 | Buf 的预算只统计正在使用的内存 | 已被 D-24 取代：buf 不再有预算 |
 | D-06 | 暂不把 Sweep 改为增量式（待定） | 100 万个 flow 每次 Sweep 实测 19～105ms（随机器不同，见 FLOW-14），按 1 秒一次约占一个核 2%～10%，按上限估算。目前各 Gateway 的规模远小于此，改为增量会增加复杂度；flow 数量接近百万时再改为每次只扫一部分分片 |
 | D-07 | TCP 不使用 worker 池复用 goroutine | worker 池是 fasthttp 针对 Web 应用大量短连接的优化；go-netx 面向长连接，新连接很少。实测每个连接只能省约 3µs（新开 goroutine 约 3.5～4.2µs 并有 1 次分配，复用约 0.6µs），约占一次 accept（79µs）的 4%，抵不过管理空闲 worker 增加的复杂度。只有当某个 Gateway 需要处理每秒数万个短连接时，才用该场景的 Benchmark 重新评估 |
 | D-08 | 拒绝连接时不回复协议层消息（不像 fasthttp 回 503） | 传输层不理解协议；需要先回复再关闭的 Gateway 自行在准入逻辑中处理 |
@@ -504,6 +509,8 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | D-20 | `Get` 只查找，`Touch` 是唯一更新 LastSeen 的操作 | 查找时顺带刷新时间，会让后台查询、`Range`、管理操作把空闲 flow 一直续命。拆开后，空闲超时只反映网关显式记录的真实流量。查找与 Touch 之间被 Sweep 插入的竞态（REG-15）改用“LastSeen 加冻结位”的单字 CAS 解决。代价：网关在收到数据时要自己调用 `Touch` 或 `GetAndTouch`；`Get` 因此更快 |
 | D-21 | buf 改为 2 的幂分档（64B…64KB，共 11 档；上限见 D-26），取代原来的 2KB、16KB、64KB 三档 | 三档最多浪费 8 倍，预算按容量扣，等于同样的预算少装好几倍数据（3KB 的消息占 16KB，50B 的包占 2KB）。主流 Go 缓冲池（netpoll 用的 mcache、fasthttp 用的 bytebufferpool、smux、gnet、libp2p）都按 2 倍分档。实测档位增多不影响速度（Get + Release 仍约 9ns，0 分配）。下限 64B：再小相对 `Buf` 本身的开销省不了多少 |
 | D-26 | buf 最大池化档位定为 64KB（11 档），不扩到 128KB 或 2MiB；更大的请求直接分配、不进池 | 放进 `sync.Pool` 的 buffer 在最后一次使用后还要在堆上留两轮 GC，并抬高下次 GC 的触发点；池化少见的大块会让一次突发的量（例如 1000 个 1–2MiB）长时间占着内存，而预算将移出 buf，期间没有上限（标准库 `fmt` 因此丢弃超过 64KB 的 buffer，golang/go#23199）。超过 64KB 的请求在网关里少见，直接分配的代价（实测 140KB 约 24µs）可以接受，且 2 的幂档位对 1.1MiB 这类请求会浪费近一半。sing、smux 同样上限 64KB。#35 曾扩到 128KB，按此决定改回 |
+| D-24 | buf 不做内存限制：去掉 `NewPool(*limit.Budget)`，`Get` 不返回 nil，`stream.ErrNoBuffer` 删除 | 内存保护属于应用层，在初始化时决定：`Admit`、`MaxConnsPerIP` 限制连接数，`ReaderOptions.Max` 限制单连接缓冲，最坏约为连接数 × Max；需要按字节限流的网关在 `Get` 外面用 `limit.Budget`（INT-07）。buf 因此不依赖 limit，热路径少一次原子操作。与 sing 的 `common/buf` 一致。代价：buf 内部不再有“超出就拒绝”的兜底，由应用负责 |
+| D-25 | buf 不做引用计数 | sing 的 `IncRef`/`DecRef` 只计数：计数大于 0 时 `Release` 不做事，减到 0 也不会自动释放，漏一次就泄漏。共享的不可变数据已有 `stream.Writer.AddShared`；真需要共享所有权时，再按“最后一个 Release 才归还”实现 |
 | D-22 | `Table.Close` 是永久关闭，之后 `GetOrOpen` 返回 `(nil, false)` | 原来的 Close 只是清空：Run 因 ctx 结束返回后，仍在运行的 UDP reader 会继续插入 flow，这些 flow 再也没人清理（REG-33）。永久关闭让“Run 返回后表里没有 flow、每个 flow 都收到 OnClose”成立。代价：行为变化，Close 之后不能再复用这张表；需要清空重用的调用方新建一张表 |
 | D-23 | 新增可选的 `TableOptions.MaxFlows`（默认 0 不限） | UDP 网关每个源地址一个 flow，伪造源地址的洪水会让表在空闲超时内无界增长。上限满时 `GetOrOpen` 返回 `(nil, false)`，由调用方丢包，并用 `Refused()` 计数；已有 flow 不受影响。只在创建时多一次原子加减，查找路径不变（实测 `GetOrOpen` 已有 key、`GetAndTouch` 前后差异在噪声 ±10% 内）。不做淘汰旧 flow 的 LRU：那会让攻击者挤掉真实会话 |
 
@@ -529,13 +536,13 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | NF-08 | Fuzz | UDP 的 Reply 和 WriteTo 接收任意参数都不会 panic，只返回文档列出的错误 | ✅ | `udp.FuzzReplyAndWriteTo` | 种子语料随 `go test` 运行；`make fuzz` 对每个目标做长时间 fuzz |
 | NF-09 | Fuzz | Flow 表的随机操作序列与模型一致，epoch 有效，OnClose 恰好一次 | ✅ | `flow.FuzzTableOps` | 种子语料随 `go test` 运行；`make fuzz` 对每个目标做长时间 fuzz |
 | NF-10 | Fuzz | Queue 的随机操作序列与模型一致：FIFO、容量、溢出策略、Stats | ✅ | `queue.FuzzRingOps` | 种子语料随 `go test` 运行；`make fuzz` 对每个目标做长时间 fuzz |
-| NF-11 | Fuzz | Buf 的随机 Get/Release 序列：预算与持有量一致，内存不共享 | ✅ | `buf.FuzzGetRelease` | 种子语料随 `go test` 运行；`make fuzz` 对每个目标做长时间 fuzz |
+| NF-11 | Fuzz | Buf 的随机 Get/Release 与游标操作（Write、Extend、ExtendHeader、Advance、Truncate、Reserve/Unreserve、Reset、ReadFullFrom）序列，与切片模型逐步比对；该失败的操作失败且不改变状态；持有的 buffer 不共享内存；全部释放 | ✅ | `buf.FuzzGetRelease` | 种子语料随 `go test` 运行；`make fuzz` 对每个目标做长时间 fuzz |
 | NF-12 | Bench | UDP 回显 | ✅ | `udp.BenchmarkEcho` | 约 10µs，0 次分配 |
 | NF-22 | Bench | UDP 接收（队列中有积压时每个数据报的接收开销），按 Batch 1、8、32 对比 | ✅ | `udp.BenchmarkRecv` | 2 vCPU：Batch 1 约 2.2µs，Batch 8 约 1.2µs，0 次分配 |
 | NF-13 | Bench | TCP accept 吞吐 | ✅ | `tcp.BenchmarkAccept` | 实测约 79µs/连接（建立、接受、关闭），23 次分配 |
 | NF-14 | Bench | 不同 flow 数量下的查找和清扫 | ✅ | `flow.BenchmarkGetAddrPort`<br>`flow.BenchmarkGetAndTouch`<br>`flow.BenchmarkGetBySize`<br>`flow.BenchmarkGetOrOpenExisting`<br>`flow.BenchmarkSweepBySize` | `flow.BenchmarkGetBySize`、`flow.BenchmarkSweepBySize` |
 | NF-15 | Bench | Queue | ✅ | `queue.BenchmarkPushPop` |  |
-| NF-16 | Bench | Buf | ✅ | `buf.BenchmarkGetReleaseBySize`<br>`buf.BenchmarkGetRelease` |  |
+| NF-16 | Bench | Buf | ✅ | `buf.BenchmarkGetReleaseBySize`<br>`buf.BenchmarkGetRelease`<br>`buf.BenchmarkHeaderPath` |  |
 | NF-19 | Bench | 共享计数器 | ✅ | `counter.BenchmarkCounterInc` |  |
 | NF-20 | Fuzz | stream.Reader：随机的读取分块与 Peek/Discard 序列与模型一致 | ✅ | `stream.FuzzReader` | `make fuzz` |
 | NF-17 | 交叉编译 | linux/amd64、linux/386、darwin/arm64、windows/amd64、freebsd/amd64、js/wasm | ⚙️ |  | 对 linux/amd64、linux/386、darwin/arm64、windows/amd64、freebsd/amd64、js/wasm 执行 `GOOS=… GOARCH=… go vet ./...` |

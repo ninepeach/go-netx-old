@@ -4,6 +4,15 @@
 
 ### Added
 
+- buf: a cursor buffer after sing's `common/buf`. `GetHeadroom(head, size)`
+  keeps room in front of the data; `ExtendHeader`, `Extend`, `Advance`,
+  `Truncate`, `Reserve`/`Unreserve`, `Reset`, `Bytes`, `FreeBytes`,
+  `Write`/`WriteString`/`WriteByte`, `ReadOnceFrom`, `ReadFullFrom`,
+  `ReadPacketFrom` and `WriteTo` add and strip protocol headers and
+  trailers without copying the payload. `As`/`With` wrap memory buf does
+  not own. `buf.Default` with package-level `Get`, `GetHeadroom` and
+  `Copy`. Get + Release still allocates nothing.
+
 - socket: `CheckDialer(Options)` returns, without dialing, the error every
   dial with these options would return (Fast Open on a dialer, D-19).
 - tcp: `DialOptions.Validate()` checks a dialer configuration at startup.
@@ -64,6 +73,14 @@
   (Fast Open on macOS). `tcp.Listen` uses it.
 
 ### Changed
+
+- **buf (breaking):** buf no longer limits memory (D-24): `NewPool()` takes
+  no budget, `Get` never returns nil, and `stream.ErrNoBuffer` is gone.
+  Bound memory in the application (connections × `ReaderOptions.Max`, or
+  a `limit.Budget` reserved around `Get`). `Get(n)` now returns an empty
+  buffer with room for n bytes instead of `B` of length n; the `B` field
+  is replaced by `Bytes()`, `FreeBytes()` and the cursor methods.
+- stream: `NewReader` with a nil pool uses `buf.Default`.
 
 - buf: size classes are powers of two from 64B to 64KB (11 classes)
   instead of 2KB, 16KB and 64KB, so a buffer is less than twice its

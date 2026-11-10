@@ -69,7 +69,7 @@ it. `go test ./...` fails if a package lacks one (DOC-02).
 ```
 netx (root)        → nothing
 limit, queue, flow → nothing
-buf                → limit
+buf                → nothing
 stream             → buf
 socket             → nothing
 tcp                → socket, limit, internal
@@ -151,8 +151,9 @@ contiguous buffer is enough.
 
 1. **Borrowed** — data passed to a callback (`udp.Packet.Data`) is valid only
    until the callback returns. Never Release it; `buf.Pool.Copy` it to keep it.
-2. **Owned** — a `*buf.Buf` from `Get`/`Copy` has exactly one owner, who
-   Releases it exactly once.
+2. **Owned** — a `*buf.Buf` from `Get`/`GetHeadroom`/`Copy` has exactly one
+   owner, who Releases it exactly once. `buf.As`/`buf.With` wrap memory buf
+   does not own; their Release only forgets it.
 3. **Transfer** — handing a `*buf.Buf` on (for example `queue.Ring.Push`)
    transfers ownership. If the transfer fails (`Push` returns false), the
    caller still owns it.

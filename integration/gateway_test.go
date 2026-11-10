@@ -73,19 +73,19 @@ func TestTCPFlowLifecycle(t *testing.T) {
 }
 
 // A full DropOldest queue evicts buffers through OnDrop, and every buffer
-// is returned to the budget.
+// is released (counted in netxdebug builds).
 //
 // Checks: INT-06
 func TestFullQueueReleasesEvictedBuffers(t *testing.T) {
-	budget := limit.NewBudget(1 << 20)
-	pool := buf.NewPool(budget)
+	before := buf.Outstanding()
+	pool := buf.NewPool()
 	var dropped atomic.Int32
 	q := queue.New(queue.Options[*buf.Buf]{
 		Cap: 2, Policy: queue.DropOldest,
 		OnDrop: func(b *buf.Buf) { dropped.Add(1); b.Release() },
 	})
 	conn, err := udp.Listen(context.Background(), "udp", "127.0.0.1:0", func(_ *udp.Conn, p *udp.Packet) {
-		if b := pool.Copy(p.Data); b != nil && !q.Push(b) {
+		if b := pool.Copy(p.Data); !q.Push(b) {
 			b.Release()
 		}
 	}, udp.Options{})
@@ -108,34 +108,36 @@ func TestFullQueueReleasesEvictedBuffers(t *testing.T) {
 	if dropped.Load() != 8 || q.Len() != 2 {
 		t.Fatalf("dropped=%d len=%d", dropped.Load(), q.Len())
 	}
-	if budget.Used() != 2*int64(buf.Capacity(1)) { // two 1-byte datagrams
-		t.Fatalf("budget holds %d, want only the 2 queued buffers", budget.Used())
+	if held := buf.Outstanding() - before; buf.Debug && held != 2 {
+		t.Fatalf("%d buffers held, want only the 2 queued", held)
 	}
 	q.Close()
 	q.Drain()
-	if budget.Used() != 0 {
-		t.Fatalf("budget not fully returned: %d", budget.Used())
-	}
-	if buf.Debug && buf.Outstanding() != 0 {
-		t.Fatalf("%d buffers leaked", buf.Outstanding())
+	if held := buf.Outstanding() - before; held != 0 {
+		t.Fatalf("%d buffers leaked", held)
 	}
 }
 
-// When the buffer budget is exhausted, datagrams are dropped; once buffers
-// are released, traffic flows again.
+// The gateway bounds the memory it holds with its own limit.Budget around
+// buf (buf itself does not limit, D-24): when the budget is exhausted,
+// datagrams are dropped; once buffers are released, traffic flows again.
 //
 // Checks: INT-07
 func TestBudgetExhaustionDropsThenRecovers(t *testing.T) {
 	budget := limit.NewBudget(int64(buf.Capacity(1))) // room for one held 1-byte datagram
-	pool := buf.NewPool(budget)
+	pool := buf.NewPool()
 	held := make(chan *buf.Buf, 4)
+	release := func(b *buf.Buf) {
+		budget.Release(int64(buf.Capacity(b.Cap())))
+		b.Release()
+	}
 	var overBudget atomic.Int32
 	conn, err := udp.Listen(context.Background(), "udp", "127.0.0.1:0", func(c *udp.Conn, p *udp.Packet) {
-		b := pool.Copy(p.Data)
-		if b == nil {
+		if !budget.Reserve(int64(buf.Capacity(len(p.Data)))) {
 			overBudget.Add(1)
 			return
 		}
+		b := pool.Copy(p.Data)
 		held <- b
 		_ = c.Reply(p, []byte("ok"))
 	}, udp.Options{})
@@ -159,12 +161,12 @@ func TestBudgetExhaustionDropsThenRecovers(t *testing.T) {
 	cl.Write([]byte("b")) // budget full: dropped
 	eventually(t, func() bool { return overBudget.Load() == 1 })
 
-	(<-held).Release() // gateway finishes with the first one
+	release(<-held) // gateway finishes with the first one
 	cl.Write([]byte("c"))
 	if _, err := cl.Read(in); err != nil {
 		t.Fatal("traffic did not recover:", err)
 	}
-	(<-held).Release()
+	release(<-held)
 	if budget.Used() != 0 {
 		t.Fatalf("used=%d", budget.Used())
 	}

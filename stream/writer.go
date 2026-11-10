@@ -37,8 +37,8 @@ func NewWriter(dst io.Writer) *Writer { return &Writer{dst: dst} }
 // Add queues b for the next Flush and takes ownership of it.
 func (w *Writer) Add(b *buf.Buf) {
 	w.held = append(w.held, b)
-	w.vec = append(w.vec, b.B)
-	w.size += len(b.B)
+	w.vec = append(w.vec, b.Bytes())
+	w.size += b.Len()
 }
 
 // AddShared queues p for the next Flush without taking ownership: p is
