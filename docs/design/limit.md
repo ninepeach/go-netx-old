@@ -65,3 +65,7 @@ RES-01…RES-18 in [docs/TESTING.md](../TESTING.md).
 ## 7. Open items
 
 None.
+
+## Cross-repository target-design alignment (2026-11-10)
+
+The [canonical target design](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/design.md) and [phased implementation plan](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/implementation-steps.zh.md) describe additional planned abstractions and acceptance criteria. This document specifies the **current module contract**. The canonical plan's AdmissionPermit and MemoryLease are target contracts. Current Limiter/Budget primitives do not by themselves provide idempotent owner-bound permits/leases or per-kind memory snapshots. Do not treat target APIs as implemented or change this module's boundaries without an explicit cross-repository design decision.
