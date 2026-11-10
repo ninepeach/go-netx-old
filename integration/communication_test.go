@@ -151,7 +151,9 @@ func TestUDPGatewayComposition(t *testing.T) {
 				t.Fatalf("%q %v", in[:n], err)
 			}
 		}
-		cl.Close()
+		// Kept open until the end: a closed client's port can be handed to
+		// the next one (seen on macOS CI), which would merge two flows.
+		defer cl.Close()
 	}
 	if flows.Len() != 4 {
 		t.Fatalf("flows=%d", flows.Len())

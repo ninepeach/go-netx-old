@@ -251,6 +251,8 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | FLOW-31 | P0 | `Run` 退出时仍有写入方并发 `GetOrOpen`：Run 返回后表为空，每个创建过的 flow 都恰好收到一次 OnClose | ✅ | `flow.NoFlowsSurviveRunExit` | 50 轮，4 个写入方；`-race` 下运行 |
 | FLOW-32 | P1 | `MaxFlows`：满时新 key 返回 `(nil, false)`、不调用 newValue、计入 `Refused()`；已有 flow 照常找到；Remove、Sweep、Close 都归还名额；newValue panic 时名额归还 | ✅ | `flow.BenchmarkGetOrOpenCreate`<br>`flow.MaxFlows` | D-23 |
 | FLOW-33 | P1 | `MaxFlows` 在并发创建下精确：8 个写入方争 100 个名额，恰好创建 100 个，其余计入 `Refused()`；负数 panic | ✅ | `flow.MaxFlowsConcurrent` |  |
+| FLOW-34 | P1 | `Close` 不等待并发操作的回调：Remove 的 OnClose 尚未返回时 `Close` 照常返回，表已关闭、为空；需要回调全部结束的调用方先停止并等待并发操作，再调用 Close | ✅ | `flow.CloseCanReturnWhileConcurrentOnCloseRuns` | 记录契约；在 Close 内等待会让回调里再调用表的 OnClose 死锁 |
+| FLOW-35 | P1 | `Close` 返回后，即使 `MaxFlows` 名额已释放，任何 key 的 `GetOrOpen` 都不会创建 flow | ✅ | `flow.CloseBlocksNewFlowsAfterReturning` |  |
 
 ## 6. limit：资源控制
 

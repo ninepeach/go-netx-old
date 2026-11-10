@@ -69,7 +69,8 @@
   Before, flows inserted during or after Close stayed in the table with
   no sweep and no OnClose. **Behaviour change:** create a new table
   instead of reusing a closed one, and handle a nil flow from
-  `GetOrOpen`.
+  `GetOrOpen`. `Closed` means Close has started; Close does not wait for
+  OnClose callbacks run by a concurrent Remove, Sweep or Close.
 - stream: `Reader` grows through the power-of-two classes.
 - flow: `Table.Get` is a pure lookup and `GetOrOpen` no longer refreshes
   an existing flow's `LastSeen`; a new flow's `LastSeen` starts at the

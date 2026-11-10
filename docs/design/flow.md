@@ -119,9 +119,18 @@ shard is emptied (and is closed with it) or sees the mark and creates
 nothing. That makes "after Run returns the table is empty and every flow
 got its OnClose" hold even while UDP readers are still running (REG-33).
 
+**Close completion.** `Closed` reports that Close has started, not that
+every OnClose has returned. Close removes and closes every flow it finds,
+but a Remove, Sweep or another Close running at the same time may still be
+inside OnClose for a flow it took out first. Close is therefore not a
+barrier for callbacks: a caller that needs every OnClose finished stops and
+joins those operations before calling Close (FLOW-34). Joining inside Close
+would make an OnClose that calls back into the table deadlock.
+
 **MaxFlows (D-23).** An optional cap against spoofed-source floods. The
-count is one atomic, touched only when a flow is created or leaves; a full
-table refuses new keys (`Refused` counts them) and keeps serving existing
+count is one atomic, touched only when a flow is created or leaves (a
+removal releases its slot before the shard unlocks, once per shard in
+Sweep and Close); a full table refuses new keys (`Refused` counts them) and keeps serving existing
 flows. There is no eviction of old flows to make room: that would let a
 flood push out real sessions.
 
@@ -153,7 +162,7 @@ D-22: `Close` is permanent. D-23: optional `MaxFlows`, refusing new keys.
 
 ## 6. Testing
 
-FLOW-01…FLOW-33, NF-05 (stress), NF-09 (fuzz), NF-14 in
+FLOW-01…FLOW-35, NF-05 (stress), NF-09 (fuzz), NF-14 in
 [docs/TESTING.md](../TESTING.md).
 
 ## 7. Open items
