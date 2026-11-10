@@ -28,10 +28,16 @@
 package buf
 
 import (
+	"errors"
 	"io"
 	"net"
 	"strconv"
 )
+
+// ErrInvalidCount is returned when a source or destination reports a count
+// outside 0..len(p), which the io contracts forbid. The buffer is left
+// unchanged.
+var ErrInvalidCount = errors.New("buf: invalid count from Read, ReadFrom or Write")
 
 // Buf is a byte buffer with a start and an end cursor over one block of
 // memory:
@@ -130,7 +136,7 @@ func (b *Buf) Advance(n int) {
 	if n < 0 {
 		panic("buf: negative Advance")
 	}
-	b.start = min(b.start+n, b.end)
+	b.start += min(n, b.end-b.start) // never start+n: n may be up to MaxInt
 }
 
 // Truncate keeps the first n bytes of the data. It panics unless
@@ -200,12 +206,16 @@ func (b *Buf) WriteByte(c byte) error {
 
 // ReadOnceFrom reads once from r into the free space and appends what it
 // read. It returns io.ErrShortBuffer, without reading, if the buffer is
-// full.
+// full, and ErrInvalidCount, appending nothing, if r reports a count
+// outside the space it was given.
 func (b *Buf) ReadOnceFrom(r io.Reader) (int, error) {
 	if b.IsFull() {
 		return 0, io.ErrShortBuffer
 	}
 	n, err := r.Read(b.data[b.end:b.capacity])
+	if n < 0 || n > b.capacity-b.end {
+		return 0, ErrInvalidCount
+	}
 	b.end += n
 	return n, err
 }
@@ -223,18 +233,31 @@ func (b *Buf) ReadFullFrom(r io.Reader, n int) (int, error) {
 }
 
 // ReadPacketFrom reads one datagram from c into the free space and appends
-// it. A datagram larger than FreeLen is truncated by the system.
+// it. A datagram larger than FreeLen is truncated by the system. Like
+// ReadOnceFrom, it returns ErrInvalidCount for a count outside the space.
 func (b *Buf) ReadPacketFrom(c net.PacketConn) (int, net.Addr, error) {
 	if b.IsFull() {
 		return 0, nil, io.ErrShortBuffer
 	}
 	n, addr, err := c.ReadFrom(b.data[b.end:b.capacity])
+	if n < 0 || n > b.capacity-b.end {
+		return 0, addr, ErrInvalidCount
+	}
 	b.end += n
 	return n, addr, err
 }
 
-// WriteTo writes the data to w. It does not consume it.
+// WriteTo writes the data to w. It does not consume it. A short write that
+// w reports with a nil error, which io.Writer forbids but some wrappers do,
+// returns io.ErrShortWrite; a count outside 0..Len returns ErrInvalidCount.
 func (b *Buf) WriteTo(w io.Writer) (int64, error) {
-	n, err := w.Write(b.Bytes())
+	p := b.Bytes()
+	n, err := w.Write(p)
+	if n < 0 || n > len(p) {
+		return 0, ErrInvalidCount
+	}
+	if err == nil && n < len(p) {
+		err = io.ErrShortWrite
+	}
 	return int64(n), err
 }

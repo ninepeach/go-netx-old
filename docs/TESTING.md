@@ -335,7 +335,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | BUF-06 | P1 | 在 `netxdebug` 下 `Outstanding` 能反映泄漏 | ✅ | `integration.UDPGatewayComposition` |  |
 | BUF-07 | P1 | 释放后继续使用的行为 | ➖ |  | 约定为调用方的 bug，正式构建中无法检测 |
 | BUF-08 | P1 | 并发 Get 不会返回同一块正在使用的内存 | ✅ | `buf.ConcurrentGetNeverShares` |  |
-| BUF-09 | P1 | 负数大小时 panic | ✅ | `buf.GetNegativeSizePanics` |  |
+| BUF-09 | P1 | 负数大小时 panic（`Get`、`GetHeadroom`、`Capacity`）；头部空间加大小溢出时 panic | ✅ | `buf.GetNegativeSizePanics` |  |
 | BUF-10 | P1 | `Reset` 清空数据、恢复原始头部空间和容量并取消 `Reserve`；不支持扩容 | ✅ | `buf.HeadroomAndCursors` | 超过 `Cap` 的需求要换更大的 buffer |
 | BUF-11 | P2 | GC 回收池中对象后，正确性不受影响 | ✅ | `buf.PoolCorrectAcrossGC` |  |
 | BUF-12 | P2 | 热路径零分配 | ✅ | `buf.BenchmarkGetReleaseBySize`<br>`buf.BenchmarkGetRelease`<br>`buf.BenchmarkHeaderPath` |  |
@@ -350,6 +350,8 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | BUF-21 | P1 | `ReadPacketFrom` 读一个数据报到空闲空间并返回来源地址，满时返回 `io.ErrShortBuffer` | ✅ | `buf.ReadPacketFrom` |  |
 | BUF-22 | P1 | `As`/`With` 包装调用方的内存：不进池、不计入 `Outstanding`，Release 只是丢弃引用、可重复调用、不改调用方内存；`With` 写入调用方内存 | ✅ | `buf.UnmanagedWrappers` |  |
 | BUF-23 | P1 | 批量辅助函数：`LenMulti`/`IsEmptyMulti` 只计数据；`ToSliceMulti` 按顺序别名每个缓冲区，可作 `net.Buffers` 写出；`CopyMulti` 在 `len(dst)` 处停止；`ReleaseMulti` 每个缓冲区只释放一次、清空切片、跳过 nil | ✅ | `buf.Multi` |  |
+| BUF-24 | P0 | `Advance(math.MaxInt)` 只丢弃 `Len` 字节，游标不溢出成负数，之后仍可 `ExtendHeader` | ✅ | `buf.AdvanceHugeDoesNotOverflow` | REG-35 |
+| BUF-25 | P0 | 来源或目标报告越界计数（负数、超过给定空间）时，`ReadOnceFrom`/`ReadPacketFrom`/`WriteTo` 返回 `ErrInvalidCount` 且不改变缓冲区；`WriteTo` 少写且无错误时返回 `io.ErrShortWrite`，不消费数据 | ✅ | `buf.InvalidIOCounts` | REG-36 |
 
 ## 8.5 stream：流式读写
 
@@ -481,6 +483,8 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | REG-32 | udp | macOS 默认 `SO_SNDBUF` 为 9216 字节，超过它的数据报 `WriteTo` 返回 EMSGSIZE，`MaxDatagram` 的约定在 Mac 上不成立（CI 实测） | UDP-19、UDP-20 | ✅ |
 | REG-33 | flow | `Table.Close`（含 Run 退出时的 Close）只清空不关闭，之后或同时到来的 `GetOrOpen` 照常插入；这些 flow 不会被 Sweep 也收不到 OnClose（实测 200 轮后残留 309,607 个） | FLOW-30、FLOW-31 | ✅ |
 | REG-34 | tcp、udp | 停止信号早于 `Serve` 开始（如启动期间收到 SIGTERM）时，`Shutdown` 只关闭监听，随后的 `Serve` 返回 `ErrClosed`，`LoopContext` 把它当作服务错误交给 `OnError` 并返回，正常停止被报告为失败 | TCP-30、UDP-39、INT-10 | ✅ |
+| REG-35 | buf | `Advance` 计算 `start+n`，n 很大时整数溢出：`Advance(math.MaxInt)` 后 Start 为 -9223372036854775793、Len 为负，之后任何访问都会越界 panic（外部审查发现，修复前测试实测） | BUF-24 | ✅ |
+| REG-36 | buf | `ReadOnceFrom`/`ReadPacketFrom` 不检查来源返回的计数，负数或超出空间的计数直接移动游标（实测 count -1 返回 -1、nil）；`WriteTo` 把少写且无错误当作成功（与 REG-30 同类） | BUF-25 | ✅ |
 
 ### 设计决定
 

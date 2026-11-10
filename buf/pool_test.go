@@ -49,6 +49,7 @@ func TestGetNegativeSizePanics(t *testing.T) {
 	mustPanic(t, "GetHeadroom(-1, 1)", func() { p.GetHeadroom(-1, 1) })
 	mustPanic(t, "GetHeadroom(1, -1)", func() { p.GetHeadroom(1, -1) })
 	mustPanic(t, "GetHeadroom overflow", func() { p.GetHeadroom(int(^uint(0)>>1), 1) })
+	mustPanic(t, "Capacity(-1)", func() { Capacity(-1) })
 }
 
 // Checks: BUF-08

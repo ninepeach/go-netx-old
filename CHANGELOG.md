@@ -158,6 +158,14 @@
 
 ### Fixed
 
+- buf: `Advance(n)` with a very large n (up to `math.MaxInt`) drops the
+  data instead of overflowing the start cursor into a negative value.
+- buf: `ReadOnceFrom`, `ReadPacketFrom` and `WriteTo` return the new
+  `ErrInvalidCount`, leaving the buffer unchanged, when a source or
+  destination reports a count outside 0..len(p). `WriteTo` returns
+  `io.ErrShortWrite` for a short write with a nil error. `Capacity`
+  panics on a negative size, like `Get`.
+
 - tcp, udp: a `Shutdown` that runs before `Serve` was first called makes
   that `Serve` return nil instead of `ErrClosed`. A stop arriving during
   startup (a SIGTERM while `OnStart` runs) used to make `netx.Server`

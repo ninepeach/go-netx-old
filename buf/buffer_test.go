@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"strings"
 	"testing"
@@ -188,4 +189,87 @@ func BenchmarkHeaderPath(b *testing.B) {
 			x.Release()
 		}
 	})
+}
+
+// Advance by any non-negative n, up to math.MaxInt, drops at most Len
+// bytes: start+n must not overflow into a negative cursor.
+//
+// Checks: BUF-24
+func TestAdvanceHugeDoesNotOverflow(t *testing.T) {
+	b := GetHeadroom(16, 32)
+	defer b.Release()
+	b.WriteString("abcdef")
+	b.Advance(math.MaxInt)
+	if b.Len() != 0 || b.Start() != 22 {
+		t.Fatalf("after Advance(MaxInt): Len %d Start %d, want 0 22", b.Len(), b.Start())
+	}
+	b.Advance(math.MaxInt) // empty: still nothing to drop
+	if b.Start() != 22 {
+		t.Fatalf("second Advance moved start to %d", b.Start())
+	}
+	copy(b.ExtendHeader(2), "hi") // the cursor is still usable
+	if string(b.Bytes()) != "hi" {
+		t.Fatalf("Bytes = %q", b.Bytes())
+	}
+}
+
+// badReader returns a fixed count, whatever it was given.
+type badReader struct{ n int }
+
+func (r badReader) Read([]byte) (int, error) { return r.n, nil }
+
+// badPacketConn returns a fixed count from ReadFrom.
+type badPacketConn struct {
+	net.PacketConn
+	n int
+}
+
+func (c badPacketConn) ReadFrom([]byte) (int, net.Addr, error) { return c.n, nil, nil }
+
+// countWriter returns a fixed count and no error from Write.
+type countWriter struct{ n int }
+
+func (w countWriter) Write([]byte) (int, error) { return w.n, nil }
+
+// A source or destination that reports a count outside 0..len(p) breaks
+// the io contract. ReadOnceFrom and ReadPacketFrom return ErrInvalidCount
+// and leave the buffer unchanged instead of moving the cursor past Cap or
+// before the data; WriteTo returns ErrInvalidCount for such a count and
+// io.ErrShortWrite for a short write with a nil error.
+//
+// Checks: BUF-25
+func TestInvalidIOCounts(t *testing.T) {
+	b := Get(8)
+	defer b.Release()
+	b.WriteString("ab")
+	for _, n := range []int{-1, 7, math.MaxInt} { // 6 bytes free
+		if k, err := b.ReadOnceFrom(badReader{n}); k != 0 || !errors.Is(err, ErrInvalidCount) {
+			t.Fatalf("ReadOnceFrom count %d = %d, %v", n, k, err)
+		}
+		if k, _, err := b.ReadPacketFrom(badPacketConn{n: n}); k != 0 || !errors.Is(err, ErrInvalidCount) {
+			t.Fatalf("ReadPacketFrom count %d = %d, %v", n, k, err)
+		}
+		if string(b.Bytes()) != "ab" || b.FreeLen() != 6 {
+			t.Fatalf("buffer changed after count %d: %q free %d", n, b.Bytes(), b.FreeLen())
+		}
+	}
+	if k, err := b.ReadOnceFrom(badReader{6}); k != 6 || err != nil || b.Len() != 8 {
+		t.Fatalf("valid count 6 = %d, %v, Len %d", k, err, b.Len())
+	}
+
+	b.Truncate(2)
+	if n, err := b.WriteTo(countWriter{1}); n != 1 || err != io.ErrShortWrite {
+		t.Fatalf("short write = %d, %v; want 1, io.ErrShortWrite", n, err)
+	}
+	for _, n := range []int{-1, 3} {
+		if k, err := b.WriteTo(countWriter{n}); k != 0 || !errors.Is(err, ErrInvalidCount) {
+			t.Fatalf("WriteTo count %d = %d, %v", n, k, err)
+		}
+	}
+	if n, err := b.WriteTo(countWriter{2}); n != 2 || err != nil {
+		t.Fatalf("full write = %d, %v", n, err)
+	}
+	if string(b.Bytes()) != "ab" {
+		t.Fatalf("WriteTo consumed data: %q", b.Bytes())
+	}
 }
