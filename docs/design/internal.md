@@ -63,3 +63,20 @@ Reads every test function's `// Checks:` directive (ignoring build tags) and
 regenerates the test column of [docs/TESTING.md](../TESTING.md); its unit
 test (DOC-01) fails `go test` on any mismatch, and DOC-02 requires a design
 document for every package. Rules: [docs/CONTRIBUTING.md](../CONTRIBUTING.md).
+
+## internal/tools/baseline — gateway-scale measurements
+
+`make baseline` runs it. It measures, on one host:
+
+- Server-side memory per idle TCP connection (heap plus stack, after GC)
+  for a raw read, `stream.Reader`, `bufio.Reader`, and `stream.Reader`
+  after one 10KB frame with and without `Shrink`. Each mode runs in a
+  fresh process.
+- Request/response throughput and latency percentiles through
+  `stream.Reader` and `stream.Writer`.
+- A client that stops reading, while other clients keep running.
+
+The results, and the machine they came from, are recorded in
+[docs/PERFORMANCE.md](../PERFORMANCE.md). It is a measurement tool and not
+a test, so it has no checkpoints.
+

@@ -1,4 +1,4 @@
-.PHONY: fmt fmtcheck test race vet bench testdoc doccheck cross stress fuzz check verify examples clean
+.PHONY: fmt fmtcheck test race vet bench baseline testdoc doccheck cross stress fuzz check verify examples clean
 
 PLATFORMS := linux/amd64 linux/386 darwin/arm64 windows/amd64 freebsd/amd64 js/wasm
 
@@ -24,6 +24,13 @@ vet:
 
 bench:
 	go test -run '^$$' -bench . -benchmem ./...
+
+# Gateway-scale baselines recorded in docs/PERFORMANCE.md: idle connection
+# memory, request/response latency, a client that stops reading. Needs a
+# file-descriptor limit above 2 x BASELINE_CONNS.
+BASELINE_CONNS ?= 9000
+baseline:
+	go run ./internal/tools/baseline -idle $(BASELINE_CONNS)
 
 testdoc:
 	go run ./internal/tools/testdoc -w

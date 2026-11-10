@@ -198,6 +198,8 @@ send queue that coalesces position updates are gateway code.
 This file is the overall design; each package's design is in
 [docs/design](docs/design) (one file per package, `go test` enforces it,
 DOC-02); tests and decisions are in [docs/TESTING.md](docs/TESTING.md);
+measured baselines and the tuning guide in
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md);
 working rules in [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md). A design
 change is made here, in the same pull request as the code. Copies
 elsewhere, such as the claude.ai Project or older design archives, are
