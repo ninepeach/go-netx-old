@@ -168,7 +168,9 @@ func Listen(ctx context.Context, network, address string, opts Options) (net.Lis
 }
 
 // Dialer applies outbound socket options to base. The returned value is a
-// copy; the supplied dialer is not mutated. A Control or ControlContext
+// copy; the supplied dialer is not mutated. Options a dialer cannot use
+// (see CheckDialer) make every dial fail; check them first with
+// CheckDialer. A Control or ControlContext
 // already set on base keeps working: it runs first (ControlContext when
 // both are set, as in the net package), then the options are applied, all
 // through the returned dialer's ControlContext.
@@ -195,13 +197,27 @@ func Dialer(base net.Dialer, opts Options) net.Dialer {
 	return base
 }
 
+// CheckDialer reports, without dialing, whether opts can be used for dialed
+// connections: it returns the *UnsupportedOptionError every dial would
+// return, currently for FastOpen.Enabled (D-19), or nil. Call it at startup
+// so a bad configuration fails there instead of on the first dial; Dialer
+// itself has no error to return.
+func CheckDialer(opts Options) error {
+	if opts.FastOpen.Enabled {
+		return &UnsupportedOptionError{Option: "TCP Fast Open", Platform: "dialed connections"}
+	}
+	return nil
+}
+
 func control(opts Options, outbound bool) func(string, string, syscall.RawConn) error {
 	return func(network, _ string, raw syscall.RawConn) error {
 		if err := checkNetwork(network, opts); err != nil {
 			return err
 		}
-		if outbound && opts.FastOpen.Enabled {
-			return &UnsupportedOptionError{Option: "TCP Fast Open", Platform: "dialed connections"}
+		if outbound {
+			if err := CheckDialer(opts); err != nil {
+				return err
+			}
 		}
 		if opts == (Options{}) {
 			return nil

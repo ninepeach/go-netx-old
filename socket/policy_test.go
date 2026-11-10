@@ -107,6 +107,35 @@ func TestDialerRefusesFastOpen(t *testing.T) {
 	}
 }
 
+// CheckDialer returns, without dialing, the same error a dial returns.
+//
+// Checks: SOCK-31
+func TestCheckDialer(t *testing.T) {
+	bad := socket.Options{FastOpen: socket.FastOpenOptions{Enabled: true}}
+	want := socket.CheckDialer(bad)
+	var uoe *socket.UnsupportedOptionError
+	if !errors.As(want, &uoe) || uoe.Option != "TCP Fast Open" || uoe.Platform != "dialed connections" {
+		t.Fatalf("CheckDialer = %v", want)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	d := socket.Dialer(net.Dialer{}, bad)
+	if c, derr := d.DialContext(context.Background(), "tcp", ln.Addr().String()); derr == nil {
+		c.Close()
+		t.Fatal("dial succeeded")
+	} else if !errors.As(derr, &uoe) || uoe.Error() != want.Error() {
+		t.Fatalf("dial error %v differs from CheckDialer's %v", derr, want)
+	}
+	for _, ok := range []socket.Options{{}, {RecvBuffer: 1 << 16}, {ReusePort: true}, {KeepAlive: socket.KeepAlive{Disable: true}}} {
+		if err := socket.CheckDialer(ok); err != nil {
+			t.Fatalf("CheckDialer(%+v) = %v", ok, err)
+		}
+	}
+}
+
 // Checks: SOCK-29
 func TestDialerKeepsCallerControl(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

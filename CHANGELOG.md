@@ -4,6 +4,14 @@
 
 ### Added
 
+- socket: `CheckDialer(Options)` returns, without dialing, the error every
+  dial with these options would return (Fast Open on a dialer, D-19).
+- tcp: `DialOptions.Validate()` checks a dialer configuration at startup.
+  A `Dialer` built from options that fail it now returns that error from
+  `DialContext` immediately, before resolving the address or opening a
+  socket (it used to fail only after both), and still reports it through
+  `OnDial`.
+
 - flow: `TableOptions.MaxFlows` caps the number of flows; a full table's
   `GetOrOpen` returns `(nil, false)` for new keys and `Table.Refused`
   counts them. `Table.Closed` reports whether Close was called.

@@ -104,6 +104,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | SOCK-28 | P0 | `socket.Dialer` 设置了 FastOpen 时拨号报 `UnsupportedOptionError`：拨出方向的 FastOpen 会让已关闭的对端看起来连接成功（D-19） | ✅ | `socket.DialerRefusesFastOpen` |  |
 | SOCK-29 | P0 | `socket.Dialer` 保留调用方的 `Control` 和 `ControlContext`，先执行调用方的，再应用 go-netx 的选项；base 设置了 `ControlContext` 时选项照样生效 | ✅ | `socket.DialerKeepsCallerControl` |  |
 | SOCK-30 | P1 | `SetBuffers` 收到 nil 或 typed nil 连接时返回错误，不 panic，也不假装成功 | ✅ | `socket.SetBuffersRejectsNil` |  |
+| SOCK-31 | P1 | `socket.CheckDialer` 不拨号就返回与拨号时相同的 `UnsupportedOptionError`（FastOpen 开启时）；其他选项返回 nil | ✅ | `socket.CheckDialer` |  |
 
 ## 3. tcp：TCP 传输
 
@@ -160,6 +161,8 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | DIAL-06 | P1 | socket 选项作用于拨出的连接 | ✅ | `tcp.DialerAppliesSocketOptions` | 仅 Linux |
 | DIAL-07 | P1 | 回调出错时的处理 | ➖ |  | `OnDial` 没有返回值，只做观测 |
 | DIAL-08 | P1 | 并发拨号没有共享状态竞争 | ✅ | `tcp.ConcurrentDials` |  |
+| DIAL-09 | P1 | 开启 FastOpen 的拨号配置：`DialOptions.Validate()` 在启动时返回 `UnsupportedOptionError`；照样创建的 Dialer 每次 `DialContext` 立即返回同一错误，不解析地址（`.invalid` 域名不报 DNS 错误）、不建 socket（监听端收不到连接），并通过 `OnDial` 上报 | ✅ | `tcp.DialerFastOpenFailsBeforeAnyNetworkWork` | D-19 |
+| DIAL-10 | P1 | 可用的拨号配置（空、Timeout/KeepAlive、socket KeepAlive、只设 Backlog 未开启）通过 `Validate`，并能正常拨号 | ✅ | `tcp.DialOptionsValidateAcceptsUsableOptions` |  |
 
 ## 4. udp：UDP 传输
 
@@ -496,7 +499,7 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | D-16 | 缓冲区小于请求值时报错，不只报告 | 内核截断缓冲区时不报错（Linux 截到 rmem_max），网关会带着比设计小的缓冲区运行，直到高峰期丢包才发现。启动时报错，并提示调大 sysctl 或授予 CAP_NET_ADMIN，与“不静默忽略”的原则一致。代价：默认配置的机器上，请求大缓冲区会启动失败 |
 | D-17 | Linux 上默认用 recvmmsg 批量读取（`Batch` 默认 8） | 实测有积压时每个数据报的接收开销降低 30–45%（`BenchmarkRecv`，队列积压场景；最初测得约 44%，2026-11-10 复测为 30–39%，运行间差异较大），且不增加延迟（不等凑满）。代价是每个 reader 的内存变为 Batch × MaxPacket，默认约 520KB；小包网关应设置 MaxPacket。32 比 8 提升很小但内存翻 4 倍，所以默认取 8 |
 | D-18 | 只影响性能的选项在平台做不到时照常运行，影响行为的选项做不到时报错 | 要求同一份配置在 Mac 开发机和 Linux 上都能运行。监听端 FastOpen（省一个往返）、`Batch`（每次系统调用收几个包）、macOS 上的 ReusePort（能绑定但不分流）只影响性能，做不到时按普通方式运行，并由 `socket.Supported()`、`udp.Conn.Batch()` 报告实际情况；能做到的平台尽量真实现（macOS 监听端 FastOpen）。不适用于当前网络类型的选项（D-14）、达不到请求大小的缓冲区（D-16）、其他平台上的 ReusePort（第二次绑定会失败）会改变行为，仍然报错 |
-| D-19 | 拨出方向不支持 FastOpen，Dialer 设置了就报错 | 实测 Linux 上拿到 TFO cookie 后，用 FastOpen 拨一个已关闭的端口，Dial 约 100µs 返回成功，Write 也成功，错误到 Read 才出现，Dial 超时和 `DialEvent` 不再反映对端是否可达，网关会把挂掉的上游当成可用。这会改变行为，不属于 D-18 的性能项。网关拨上游通常不需要省这一个往返；监听端 FastOpen 保留 |
+| D-19 | 拨出方向不支持 FastOpen，Dialer 设置了就报错 | 实测 Linux 上拿到 TFO cookie 后，用 FastOpen 拨一个已关闭的端口，Dial 约 100µs 返回成功，Write 也成功，错误到 Read 才出现，Dial 超时和 `DialEvent` 不再反映对端是否可达，网关会把挂掉的上游当成可用。这会改变行为，不属于 D-18 的性能项。网关拨上游通常不需要省这一个往返；监听端 FastOpen 保留。配置错误要在启动时暴露：`socket.CheckDialer` / `tcp.DialOptions.Validate` 不拨号就返回同一错误，`tcp.Dialer` 在解析地址、建 socket 之前就返回它（DIAL-09） |
 | D-20 | `Get` 只查找，`Touch` 是唯一更新 LastSeen 的操作 | 查找时顺带刷新时间，会让后台查询、`Range`、管理操作把空闲 flow 一直续命。拆开后，空闲超时只反映网关显式记录的真实流量。查找与 Touch 之间被 Sweep 插入的竞态（REG-15）改用“LastSeen 加冻结位”的单字 CAS 解决。代价：网关在收到数据时要自己调用 `Touch` 或 `GetAndTouch`；`Get` 因此更快 |
 | D-21 | buf 改为 2 的幂分档（64B…64KB，共 11 档），取代原来的 2KB、16KB、64KB 三档 | 三档最多浪费 8 倍，预算按容量扣，等于同样的预算少装好几倍数据（3KB 的消息占 16KB，50B 的包占 2KB）。主流 Go 缓冲池（netpoll 用的 mcache、fasthttp 用的 bytebufferpool、smux、gnet、libp2p）都按 2 倍分档。实测档位增多不影响速度（Get + Release 仍约 9ns，0 分配）。下限 64B：再小相对 `Buf` 本身的开销省不了多少 |
 | D-22 | `Table.Close` 是永久关闭，之后 `GetOrOpen` 返回 `(nil, false)` | 原来的 Close 只是清空：Run 因 ctx 结束返回后，仍在运行的 UDP reader 会继续插入 flow，这些 flow 再也没人清理（REG-33）。永久关闭让“Run 返回后表里没有 flow、每个 flow 都收到 OnClose”成立。代价：行为变化，Close 之后不能再复用这张表；需要清空重用的调用方新建一张表 |

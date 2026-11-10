@@ -40,6 +40,7 @@ func (*Conn) Draining() <-chan struct{}
 func (*Conn) WriteBuffers(*net.Buffers) (int64, error)
 
 func NewDialer(DialOptions) *Dialer           // Timeout, KeepAlive, Socket (no FastOpen, D-19), OnDial
+func (DialOptions) Validate() error           // at startup: FastOpen → *socket.UnsupportedOptionError
 type DialEvent struct{ Network, Address string; StartedAt time.Time; Duration time.Duration; LocalAddr, RemoteAddr net.Addr; Err error }
 func (*Dialer) DialContext(ctx, network, address string) (net.Conn, error)
 var ErrClosed
