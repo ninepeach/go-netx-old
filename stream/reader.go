@@ -143,6 +143,23 @@ func (r *Reader) Discard(n int) int {
 	return n
 }
 
+// Shrink returns a grown buffer to the pool if nothing is buffered, and
+// reports whether it did. Discard does this by itself only after a light
+// read, so that steady traffic does not trade buffers back and forth; a
+// connection that goes quiet right after a large frame keeps the large
+// buffer until its next small read. Call Shrink when the caller knows the
+// connection is going idle, for example after handling a frame and before
+// a long wait for the next one, so it holds only IdleSize while idle. With
+// data buffered, or after Release, it does nothing.
+func (r *Reader) Shrink() bool {
+	if r.done || r.big == nil || r.Len() != 0 {
+		return false
+	}
+	r.r, r.w = 0, 0
+	r.shrink()
+	return true
+}
+
 // Read implements io.Reader: it hands out buffered data first, then reads
 // from the source.
 func (r *Reader) Read(p []byte) (int, error) {

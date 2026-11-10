@@ -31,6 +31,7 @@ func (*Reader) Buffered() []byte           // borrowed
 func (*Reader) Len() int
 func (*Reader) Discard(n int) int          // n <= 0 consumes nothing
 func (*Reader) Read(p []byte) (int, error) // io.Reader
+func (*Reader) Shrink() bool               // empty and grown: back to IdleSize now
 func (*Reader) Release()
 var ErrTooLarge, ErrNoBuffer, ErrReleased
 
@@ -58,6 +59,16 @@ its whole life and borrows a larger one from the pool only when needed:
   than the idle buffer: release the borrowed buffer and go back to idle.
   Requiring a light last read keeps a busy connection from bouncing between
   sizes on every frame.
+- `Shrink()` does the same on request whenever nothing is buffered. Without
+  it, a connection that goes quiet right after a large frame keeps the large
+  buffer until its next small read: measured, 1000 idle connections that
+  each last received one 2KB, 10KB or 60KB frame hold 4MB, 16MB or 64MB of
+  pool buffers. Shrinking after every drained frame instead (tried as the
+  default) made back-to-back 2–8KB frames, one per read, cost two reads per
+  frame instead of one, an extra syscall each on a socket. So the automatic
+  rule stays, and the caller, who knows when a connection is going idle
+  (after handling a frame and before a long wait, between heartbeats), calls
+  `Shrink`. It allocates nothing.
 
 **Limits.** `Peek(n)` with `n > Max`, or growth past `Max`, returns
 `ErrTooLarge`: a frame larger than the protocol allows should close the

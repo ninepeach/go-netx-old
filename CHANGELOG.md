@@ -7,6 +7,9 @@
 - flow: `TableOptions.MaxFlows` caps the number of flows; a full table's
   `GetOrOpen` returns `(nil, false)` for new keys and `Table.Refused`
   counts them. `Table.Closed` reports whether Close was called.
+- stream: `Reader.Shrink()` returns a grown buffer to the pool when
+  nothing is buffered, so a connection going idle right after a large
+  frame holds only IdleSize. The automatic shrink in `Discard` is unchanged.
 - stream: `Writer.AddShared([]byte)` queues immutable data shared by many
   connections (an encoded game configuration, a broadcast) in order with
   owned buffers, without copying it or taking ownership; `Pending` counts
