@@ -321,3 +321,17 @@ send queue that coalesces position updates are gateway code.
 - `recvmmsg`/`sendmmsg` batching: next step for UDP; the API does not change.
 - io_uring: only if batching is proven to be the bottleneck.
 - Reliable UDP: belongs to a protocol layer, not here.
+
+## Canonical target design and cross-repository alignment
+
+The long-term target design lives in [architecture-docs / projects/go-netx/design.md](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/design.md) ([Chinese](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/design.zh.md)); the phased implementation plan is [implementation-steps.zh.md](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/implementation-steps.zh.md). This file and `docs/design/` describe **current package and implementation contracts**, not automatic completion of the target design.
+
+As of 2026-11-10, the two designs are **not fully equivalent**. In particular:
+
+- `flow` currently models transport identity/state; the target design also describes logical read/write Flow and Session/epoch semantics. Reconcile the abstraction before claiming parity.
+- `buf` uses 64B–64KB size classes, `sync.Pool`, and an **in-use** `limit.Budget`; the target's retained-pool bytes and per-class retained-count bounds are a separate, unresolved requirement.
+- `limit.Budget` provides accounting, but is not itself the target's idempotent ownership-bearing `MemoryLease`.
+- `queue.Ring` is a bounded generic queue, not a complete per-Flow writer queue with all waiter/ownership requirements.
+- SessionManager, FrameCodec, reliability, deduplication, and epoch validation remain target capabilities unless separately implemented and tested.
+
+**Change control:** Preserve correctness, bounded resources, ownership, and shutdown invariants. When the target design and implementation contract conflict, document and approve a design decision in both repositories before treating either side as authoritative for the disputed requirement. Documentation synchronization is not proof of implementation or test completion.
