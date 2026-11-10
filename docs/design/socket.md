@@ -131,3 +131,7 @@ the error path.
 
 - PROXY protocol, if gateways run behind L4 balancers that hide the source
   address (see ARCHITECTURE.md).
+
+## Cross-repository target-design alignment (2026-11-10)
+
+The [canonical target design](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/design.md) and [phased implementation plan](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/implementation-steps.zh.md) describe additional planned abstractions and acceptance criteria. This document specifies the **current module contract**. Socket configuration supports transports; it does not own Flow/Session lifecycle or the canonical plan's higher-level resource contracts. Do not treat target APIs as implemented or change this module's boundaries without an explicit cross-repository design decision.
