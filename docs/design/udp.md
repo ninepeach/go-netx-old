@@ -25,7 +25,7 @@ type Packet struct {
 type Options struct {
     Readers   int // default 1; with ReusePort, one socket each
     MaxPacket int // size of each receive buffer; default and max MaxDatagram
-    Batch     int // datagrams per recvmmsg; Linux default 8, max 1024; 1 in effect elsewhere
+    Batch     int // datagrams per recvmmsg; max 1024; Linux default 8, or 1 when readers share a socket; 1 in effect elsewhere
     Socket    socket.Options
 }
 const MaxDatagram = 65000 // size limit for sends and receives

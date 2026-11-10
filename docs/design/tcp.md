@@ -30,6 +30,7 @@ type Options struct {
 func (*Server) Serve(context.Context) error   // returns after every handler
 func (*Server) Shutdown(context.Context) error
 func (*Server) Close() error                  // abort now
+func (*Server) Addr() net.Addr                // listening address
 func (*Server) Draining() <-chan struct{}
 func (*Server) Stats() Stats // Accepted, Rejected, RejectedPerIP, Active, Closed, AcceptErrors
 
@@ -39,6 +40,7 @@ func (*Conn) Draining() <-chan struct{}
 func (*Conn) WriteBuffers(*net.Buffers) (int64, error)
 
 func NewDialer(DialOptions) *Dialer           // Timeout, KeepAlive, Socket (no FastOpen, D-19), OnDial
+type DialEvent struct{ Network, Address string; StartedAt time.Time; Duration time.Duration; LocalAddr, RemoteAddr net.Addr; Err error }
 func (*Dialer) DialContext(ctx, network, address string) (net.Conn, error)
 var ErrClosed
 ```
