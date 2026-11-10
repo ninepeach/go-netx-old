@@ -12,6 +12,11 @@
   trailers without copying the payload. `As`/`With` wrap memory buf does
   not own. `buf.Default` with package-level `Get`, `GetHeadroom` and
   `Copy`. Get + Release still allocates nothing.
+- tcp: `Conn.CloseWrite`, `CloseRead`, `ReadFrom` and `WriteTo` forward to
+  the embedded connection. A proxy can half-close an accepted connection,
+  and `io.Copy` through a `*tcp.Conn` reaches the standard library's TCP
+  path (splice on Linux). For a non-TCP connection from `NewServer`, the
+  close methods return `errors.ErrUnsupported`.
 - buf: batch helpers after sing's `multi.go`: `LenMulti`, `IsEmptyMulti`,
   `ToSliceMulti`, `CopyMulti`, `ReleaseMulti`.
 
@@ -158,6 +163,10 @@
 
 ### Fixed
 
+- tcp: half-close on an accepted `*tcp.Conn` was silently skipped by code
+  that checks for `CloseWrite` (the embedded `net.Conn` interface hid it),
+  so the peer never saw a FIN, and `io.Copy` through it never used splice
+  (REG-38).
 - buf: `Advance(n)` with a very large n (up to `math.MaxInt`) drops the
   data instead of overflowing the start cursor into a negative value.
 - buf: `ReadOnceFrom`, `ReadPacketFrom` and `WriteTo` return the new
