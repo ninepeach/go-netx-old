@@ -142,3 +142,7 @@ FLOW-01…FLOW-29, NF-05 (stress), NF-09 (fuzz), NF-14 in
 ## 7. Open items
 
 - Incremental sweep (D-06).
+
+## Cross-repository target-design alignment (2026-11-10)
+
+The [canonical target design](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/design.md) and [phased implementation plan](https://github.com/ninepeach/architecture-docs/blob/main/projects/go-netx/implementation-steps.zh.md) describe additional planned abstractions and acceptance criteria. This document specifies the **current module contract**. Current flow is transport-scoped identity/state/table, with ID-as-epoch for key reuse. The canonical plan's logical read/write Flow and reconnect-surviving Session/epoch are distinct target abstractions, not implemented by naming equivalence. Do not treat target APIs as implemented or change this module's boundaries without an explicit cross-repository design decision.
