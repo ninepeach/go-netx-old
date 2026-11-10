@@ -97,9 +97,13 @@ type Server struct {
 	perIP                                                           *limit.PerKey[netip.Addr]
 	v6bits                                                          int
 
-	mu       sync.Mutex
-	serving  bool
-	stopped  bool // listener closed
+	mu      sync.Mutex
+	serving bool // Serve has been called
+	stopped bool // listener closed
+	// early is set by a Shutdown that ran before Serve was ever called:
+	// the stop was requested, so the first Serve returns nil instead of
+	// ErrClosed (REG-34). Close (an abort) does not set it.
+	early    bool
 	conns    map[*Conn]struct{}
 	ctx      context.Context // handler context, cancelled on Abort
 	abort    context.CancelFunc
@@ -158,17 +162,31 @@ func (s *Server) Draining() <-chan struct{} { return s.draining }
 // aborts. It returns after every handler has returned. A permanent accept
 // error aborts all connections and is returned. Values in ctx are visible
 // to handlers.
+//
+// If Shutdown ran before Serve was first called, the stop was requested and
+// the server is already stopped: that first Serve returns nil without
+// accepting. Any other Serve on a stopped server, and every later call,
+// returns ErrClosed.
 func (s *Server) Serve(ctx context.Context) error {
 	s.mu.Lock()
-	switch {
-	case s.stopped:
+	if s.serving {
+		stopped := s.stopped || s.early
 		s.mu.Unlock()
-		return ErrClosed
-	case s.serving:
-		s.mu.Unlock()
+		if stopped {
+			return ErrClosed
+		}
 		return errors.New("tcp: Serve called more than once")
 	}
 	s.serving = true
+	if s.stopped || s.early {
+		early := s.early
+		s.mu.Unlock()
+		close(s.done) // a Shutdown waiting for this Serve returns now
+		if early {
+			return nil
+		}
+		return ErrClosed
+	}
 	s.ctx, s.abort = context.WithCancel(context.WithoutCancel(ctx))
 	s.mu.Unlock()
 	defer close(s.done)
@@ -338,6 +356,11 @@ func (s *Server) abortAll() {
 // Shutdown stops accepting, waits for handlers until ctx is done, then
 // aborts the rest and returns ctx.Err().
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	if !s.serving {
+		s.early = true // decided under the lock Serve checks: no race
+	}
+	s.mu.Unlock()
 	s.stopAccept()
 	s.mu.Lock()
 	serving := s.serving

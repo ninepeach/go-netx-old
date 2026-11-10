@@ -145,6 +145,8 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | TCP-27 | P1 | `MaxConnsPerIP` 为负数、`IPv6PrefixBits` 超出 0～128 时 Listen/NewServer 返回错误 | ✅ | `tcp.PerIPOptionValidation` |  |
 | TCP-28 | P1 | `tcp6` 监听 `[::1]`：收发正常，两端地址都是 IPv6；Socket 选项（收发缓冲区、KeepAlive）在 IPv6 监听上生效；`MaxConnsPerIP` 对 `::1` 按 /64 计数并拒绝超额连接 | ✅ | `tcp.IPv6Loopback` | 无 IPv6 回环时跳过；CI 在 Linux 和 macOS 上设置 `NETX_REQUIRE_IPV6=1` 实际运行 |
 | TCP-29 | P1 | 双栈监听 `[::]` 同时接受 IPv4 与 IPv6 客户端；IPv4 映射地址按 IPv4 计入 `MaxConnsPerIP`，不占 IPv6 客户端的额度 | ✅ | `tcp.DualStackAcceptsIPv4` | 同上 |
+| TCP-30 | P0 | `Serve` 被调用之前已经 `Shutdown`：第一次 `Serve` 返回 nil、不接受连接，第二次返回 `ErrClosed`；监听已关闭；之后的 `Shutdown` 立即返回 nil | ✅ | `tcp.ServeAfterShutdownBeforeServe` | 调用顺序由测试固定，不依赖调度；REG-34 |
+| TCP-31 | P1 | `Serve` 之前 `Close`（中止）：`Serve` 仍返回 `ErrClosed`，重复调用也是；只有优雅的 `Shutdown` 算作已请求的停止 | ✅ | `tcp.ServeAfterCloseBeforeServeIsErrClosed` |  |
 
 ### 3.3 Dialer
 
@@ -187,6 +189,8 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | UDP-36 | P1 | 批量读取时内核丢包计数仍然生效 | ✅ | `udp.KernelDropsCountedWithBatch` | 仅 Linux |
 | UDP-37 | P1 | `Conn.Batch()` 返回实际生效的批量：Linux 上为设置值或默认 8；没有 recvmmsg 的平台上任何设置都为 1，且照常收发 | ✅ | `udp.BatchInEffect` | 按平台分别断言 |
 | UDP-38 | P1 | 多个 reader 共用一个 socket（`Readers` > 1 且未开 ReusePort）时，`Batch` 默认取 1，显式设置的值照用 | ✅ | `udp.BatchDefaultWhenReadersShareASocket` |  |
+| UDP-39 | P0 | `Serve` 被调用之前已经 `Shutdown`：第一次 `Serve` 返回 nil、不读取，第二次返回 `ErrClosed`；之后 `WriteTo` 返回 `ErrClosed`，再次 `Shutdown` 立即返回 nil | ✅ | `udp.ServeAfterShutdownBeforeServe` | 调用顺序由测试固定；REG-34 |
+| UDP-40 | P1 | `Serve` 之前 `Close`：`Serve` 仍返回 `ErrClosed`，重复调用也是 | ✅ | `udp.ServeAfterCloseBeforeServeIsErrClosed` |  |
 
 ### 4.2 发送与 Reply
 
@@ -425,6 +429,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | INT-07 | P1 | Budget 耗尽时丢包，恢复后继续正常工作 | ✅ | `integration.BudgetExhaustionDropsThenRecovers` |  |
 | INT-08 | P1 | TCP 在 drain 期间，长连接收到 `Draining` 信号后主动退出 | ✅ | `integration.TCPDrainingGoAway` |  |
 | INT-09 | P2 | 长时间运行，FD、内存、goroutine 都不泄漏 | ✅ | `integration.StressGatewayLongRun` | 压测，`make stress`；时长用 `NETX_STRESS_SECONDS` 设置，默认 3 秒，已跑过 15 秒 |
+| INT-10 | P0 | 在 `OnStart` 中请求停止、任何传输的 `Serve` 还没开始时，`LoopContext` 返回 nil，`OnError` 不被调用；覆盖 tcp、udp 和 `Group(tcp, udp)`，每种 50 次；另一组用包装让 `Serve` 一定在 `Shutdown` 返回之后才开始 | ✅ | `integration.StopBeforeServeIsCleanExit` | 修复前返回 `tcp: closed` / `udp: closed`（实测 200 次中 200 / 199 次）；REG-34 |
 
 ## 12. 回归清单与已知问题
 
@@ -465,6 +470,7 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | REG-31 | socket | macOS 在 listen 之前设置 `TCP_FASTOPEN` 返回 EINVAL，开启 FastOpen 的 Listen 直接失败（CI 在 macOS 26 上实测；PR #15 起一直存在，此前没有 macOS 实机运行） | SOCK-06、SOCK-26 | ✅ |
 | REG-32 | udp | macOS 默认 `SO_SNDBUF` 为 9216 字节，超过它的数据报 `WriteTo` 返回 EMSGSIZE，`MaxDatagram` 的约定在 Mac 上不成立（CI 实测） | UDP-19、UDP-20 | ✅ |
 | REG-33 | flow | `Table.Close`（含 Run 退出时的 Close）只清空不关闭，之后或同时到来的 `GetOrOpen` 照常插入；这些 flow 不会被 Sweep 也收不到 OnClose（实测 200 轮后残留 309,607 个） | FLOW-30、FLOW-31 | ✅ |
+| REG-34 | tcp、udp | 停止信号早于 `Serve` 开始（如启动期间收到 SIGTERM）时，`Shutdown` 只关闭监听，随后的 `Serve` 返回 `ErrClosed`，`LoopContext` 把它当作服务错误交给 `OnError` 并返回，正常停止被报告为失败 | TCP-30、UDP-39、INT-10 | ✅ |
 
 ### 设计决定
 
@@ -488,7 +494,7 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | D-14 | 选项不适用于当前网络类型时一律报错 | 在 unix 等网络上设置选项、在 UDP 上设置 FastOpen 或 KeepAlive，都属于配置错误，不再静默忽略。代价：TCP 和 UDP 不能再共用一份带 TCP 专属选项的 `socket.Options` |
 | D-15 | macOS 支持 ReusePort，FreeBSD 使用 `SO_REUSEPORT_LB` | macOS 允许多个 socket 绑定同一端口，但不分流，只有一个能收到数据；支持它是为了让同一份配置能在 Mac 开发机上运行，文档中写明不分流。FreeBSD 的 `SO_REUSEPORT_LB` 与 Linux 一样分流 |
 | D-16 | 缓冲区小于请求值时报错，不只报告 | 内核截断缓冲区时不报错（Linux 截到 rmem_max），网关会带着比设计小的缓冲区运行，直到高峰期丢包才发现。启动时报错，并提示调大 sysctl 或授予 CAP_NET_ADMIN，与“不静默忽略”的原则一致。代价：默认配置的机器上，请求大缓冲区会启动失败 |
-| D-17 | Linux 上默认用 recvmmsg 批量读取（`Batch` 默认 8） | 实测有积压时每个数据报的接收开销降低约 44%，且不增加延迟（不等凑满）。代价是每个 reader 的内存变为 Batch × MaxPacket，默认约 520KB；小包网关应设置 MaxPacket。32 比 8 提升很小但内存翻 4 倍，所以默认取 8 |
+| D-17 | Linux 上默认用 recvmmsg 批量读取（`Batch` 默认 8） | 实测有积压时每个数据报的接收开销降低 30–45%（`BenchmarkRecv`，队列积压场景；最初测得约 44%，2026-11-10 复测为 30–39%，运行间差异较大），且不增加延迟（不等凑满）。代价是每个 reader 的内存变为 Batch × MaxPacket，默认约 520KB；小包网关应设置 MaxPacket。32 比 8 提升很小但内存翻 4 倍，所以默认取 8 |
 | D-18 | 只影响性能的选项在平台做不到时照常运行，影响行为的选项做不到时报错 | 要求同一份配置在 Mac 开发机和 Linux 上都能运行。监听端 FastOpen（省一个往返）、`Batch`（每次系统调用收几个包）、macOS 上的 ReusePort（能绑定但不分流）只影响性能，做不到时按普通方式运行，并由 `socket.Supported()`、`udp.Conn.Batch()` 报告实际情况；能做到的平台尽量真实现（macOS 监听端 FastOpen）。不适用于当前网络类型的选项（D-14）、达不到请求大小的缓冲区（D-16）、其他平台上的 ReusePort（第二次绑定会失败）会改变行为，仍然报错 |
 | D-19 | 拨出方向不支持 FastOpen，Dialer 设置了就报错 | 实测 Linux 上拿到 TFO cookie 后，用 FastOpen 拨一个已关闭的端口，Dial 约 100µs 返回成功，Write 也成功，错误到 Read 才出现，Dial 超时和 `DialEvent` 不再反映对端是否可达，网关会把挂掉的上游当成可用。这会改变行为，不属于 D-18 的性能项。网关拨上游通常不需要省这一个往返；监听端 FastOpen 保留 |
 | D-20 | `Get` 只查找，`Touch` 是唯一更新 LastSeen 的操作 | 查找时顺带刷新时间，会让后台查询、`Range`、管理操作把空闲 flow 一直续命。拆开后，空闲超时只反映网关显式记录的真实流量。查找与 Touch 之间被 Sweep 插入的竞态（REG-15）改用“LastSeen 加冻结位”的单字 CAS 解决。代价：网关在收到数据时要自己调用 `Touch` 或 `GetAndTouch`；`Get` 因此更快 |

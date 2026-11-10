@@ -98,8 +98,8 @@ type Options struct {
 	// recvmmsg). A batch never waits to fill: a call returns what is
 	// queued, so batching adds no latency. The handler still sees one
 	// datagram at a time, and Packet.Data stays valid only for that call.
-	// Default 8 on Linux, where the measured receive cost per queued
-	// datagram drops by about 44%; at most 1024. When several readers share
+	// Default 8 on Linux, where the receive cost per queued datagram drops
+	// by 30-44% (BenchmarkRecv, see docs/design/udp.md); at most 1024. When several readers share
 	// one socket (Readers > 1 without ReusePort) the default is 1: a batch
 	// would give one reader several datagrams to handle in turn while the
 	// others sit idle. An explicit value is used as given. Batching only changes
@@ -173,9 +173,13 @@ type Conn struct {
 	batch   int
 	local   netip.AddrPort
 
-	mu        sync.Mutex
-	serving   bool
-	closed    bool
+	mu      sync.Mutex
+	serving bool // Serve has been called
+	closed  bool
+	// early is set by a Shutdown that ran before Serve was ever called:
+	// the stop was requested, so the first Serve returns nil instead of
+	// ErrClosed (REG-34). Close (an abort) does not set it.
+	early     bool
 	fatal     error         // first unrecoverable read error
 	done      chan struct{} // closed when Serve returns
 	closing   chan struct{} // closed by Close; wakes readers in backoff
@@ -258,17 +262,31 @@ func (c *Conn) LocalAddr() netip.AddrPort { return c.local }
 // which closes the Conn. It returns after every reader has stopped: nil on
 // a requested stop, or the first fatal read error, which also closes the
 // Conn so no reader keeps running on a broken socket.
+//
+// If Shutdown ran before Serve was first called, the stop was requested and
+// the Conn is already stopped: that first Serve returns nil without
+// reading. Any other Serve on a closed Conn, and every later call, returns
+// ErrClosed.
 func (c *Conn) Serve(ctx context.Context) error {
 	c.mu.Lock()
-	switch {
-	case c.closed:
+	if c.serving {
+		stopped := c.closed || c.early
 		c.mu.Unlock()
-		return ErrClosed
-	case c.serving:
-		c.mu.Unlock()
+		if stopped {
+			return ErrClosed
+		}
 		return errors.New("udp: Serve called more than once")
 	}
 	c.serving = true
+	if c.closed || c.early {
+		early := c.early
+		c.mu.Unlock()
+		close(c.done) // a Shutdown waiting for this Serve returns now
+		if early {
+			return nil
+		}
+		return ErrClosed
+	}
 	c.mu.Unlock()
 	defer close(c.done)
 
@@ -444,6 +462,11 @@ func (c *Conn) write(sock int, b []byte, to netip.AddrPort) error {
 // done. UDP has no connections to drain, so this is immediate unless a
 // handler is still running.
 func (c *Conn) Shutdown(ctx context.Context) error {
+	c.mu.Lock()
+	if !c.serving {
+		c.early = true // decided under the lock Serve checks: no race
+	}
+	c.mu.Unlock()
 	_ = c.Close()
 	c.mu.Lock()
 	serving := c.serving

@@ -85,6 +85,10 @@ inner connection (`stream.BuffersWriter`).
 ## 4. Concurrency
 
 `Serve` once per server (second call errors; after Close: `ErrClosed`).
+A `Shutdown` that runs before `Serve` was ever called is a requested stop:
+that first `Serve` returns nil without accepting, so a stop that arrives
+during startup is a clean exit for `netx.Server` (REG-34). `Close` before
+`Serve` is an abort and still yields `ErrClosed`, as does every later call.
 `Shutdown` and `Close` are safe concurrently and repeatedly. Handler panics
 are not recovered.
 
