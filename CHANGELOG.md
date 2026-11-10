@@ -165,6 +165,8 @@
   destination reports a count outside 0..len(p). `WriteTo` returns
   `io.ErrShortWrite` for a short write with a nil error. `Capacity`
   panics on a negative size, like `Get`.
+- buf: `Release` of a buffer over 64KB (not pooled) drops its memory, so
+  a `*Buf` kept after `Release` no longer pins it.
 
 - tcp, udp: a `Shutdown` that runs before `Serve` was first called makes
   that `Serve` return nil instead of `ErrClosed`. A stop arriving during

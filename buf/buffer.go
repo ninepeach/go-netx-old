@@ -79,6 +79,8 @@ func (b *Buf) Release() {
 	b.start, b.end, b.capacity, b.size, b.head = 0, 0, 0, 0, 0
 	if b.class >= 0 {
 		b.pool.pools[b.class].Put(b)
+	} else {
+		b.data = nil // unpooled: a *Buf kept after Release must not pin it
 	}
 }
 

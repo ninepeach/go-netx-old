@@ -32,6 +32,9 @@ func TestReleaseResetsAndDropsUnpooled(t *testing.T) {
 	if big.Len() != 0 || big.Cap() != 0 {
 		t.Fatalf("released buffer still has len %d cap %d", big.Len(), big.Cap())
 	}
+	if big.data != nil { // a *Buf kept after Release must not pin its memory
+		t.Fatalf("released unpooled buffer still references %d bytes", len(big.data))
+	}
 	small := p.Get(10)
 	small.Write([]byte("abc"))
 	small.Release()
