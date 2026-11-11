@@ -169,3 +169,17 @@ the error path.
 
 - PROXY protocol, if gateways run behind L4 balancers that hide the source
   address (see ARCHITECTURE.md).
+
+## V1 stabilization addendum — option contract and platform gate
+
+The existing public API is the baseline; do not rename options simply to mirror sing's `common/control`. Sing is a **behavioral comparison**, not code to copy. Preserve zero external dependencies and the established hook composition.
+
+1. Classify each option as **behavioral** (failure must surface) or **performance-only** (may degrade, but `Supported()` and effective behavior must be observable). No silent success when an explicitly requested behavioral option is ignored.
+2. Validate network applicability and incompatible combinations **before** opening a socket when possible. Keep the caller's `ControlContext` / `Control` ordering and context propagation; avoid invoking both when Go would invoke only one.
+3. Verify actual kernel buffer sizes after setsockopt; do not claim exact requested bytes on Linux without accounting for its doubled getsockopt reporting. Retry FORCE only where supported and authorized. Failure should preserve `errors.As` for `BufferSizeError`.
+4. Listener options and dialer options are not interchangeable: Fast Open dial remains rejected; post-listen macOS Fast Open must be applied only through the helper that actually owns the listener lifecycle. Document `ListenConfig` limitations.
+5. Keep IPv4, IPv4-mapped IPv6, native IPv6, interface index and zone behavior explicit. Test dual-stack and wildcard binds separately; never assume a successful bind implies balanced ReusePort delivery on macOS.
+6. Platform policy for V1: Linux/macOS runtime tests; Windows build/compile check only; **FreeBSD is not a supported V1 target**, even if legacy code or the comparison table lists implementation details. Do not add new FreeBSD features in this stage.
+7. TProxy/OriginalDestination remain separate work-in-progress: audit existing behavior only where it affects the five modules, do not expand the public surface.
+
+**Acceptance:** table-driven invalid-options tests, real socket getsockopt checks, context/hook ordering, denied privilege, unsupported platform behavior, IPv4/IPv6, race and Windows cross-compile. No transport package may duplicate raw socket option logic.
