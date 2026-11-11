@@ -9,8 +9,9 @@ import (
 
 // Random Get/Release sequences with cursor operations, checked against a
 // plain-slice model: each held buffer's data matches its model after every
-// operation, operations that must fail fail without changing anything, no
-// two held buffers share memory, and every Get is released.
+// operation (appends, consuming reads, cursor moves), operations that must
+// fail fail without changing anything, no two held buffers share memory,
+// and every Get is released.
 //
 // Checks: NF-11
 func FuzzGetRelease(f *testing.F) {
@@ -43,7 +44,7 @@ func FuzzGetRelease(f *testing.F) {
 		}
 		free := func(m *model) int { return m.head + m.size - m.reserved - m.start - len(m.data) }
 		for i := 0; i+2 < len(ops); i += 3 {
-			op, arg := ops[i]%10, int(binary.LittleEndian.Uint16(ops[i+1:i+3]))
+			op, arg := ops[i]%16, int(binary.LittleEndian.Uint16(ops[i+1:i+3]))
 			if op == 0 || len(live) == 0 { // Get, sometimes with headroom, up to ~128KB
 				head := 0
 				if arg%3 == 0 {
@@ -144,6 +145,61 @@ func FuzzGetRelease(f *testing.F) {
 						t.Fatalf("ReadFullFrom(%d) = %d, %v", n, k, err)
 					}
 					m.data = append(m.data, mark...)
+				}
+			case 10: // Read: consumes from the front
+				p := make([]byte, n)
+				k, err := m.b.Read(p)
+				want := min(n, len(m.data))
+				if k != want || !bytes.Equal(p[:k], m.data[:want]) || (err == io.EOF) != (n > 0 && len(m.data) == 0) {
+					t.Fatalf("Read(%d) = %d, %v with %d bytes", n, k, err, len(m.data))
+				}
+				m.start += k
+				m.data = m.data[k:]
+			case 11: // ReadBytes: a view, or nothing consumed
+				v, err := m.b.ReadBytes(n)
+				if n > len(m.data) {
+					if v != nil || err == nil {
+						t.Fatalf("ReadBytes(%d) of %d bytes = %q, %v", n, len(m.data), v, err)
+					}
+				} else {
+					if err != nil || !bytes.Equal(v, m.data[:n]) {
+						t.Fatalf("ReadBytes(%d) = %q, %v", n, v, err)
+					}
+					m.start += n
+					m.data = m.data[n:]
+				}
+			case 12: // FullReset: no headroom, no reserve
+				m.b.FullReset()
+				m.start, m.data, m.reserved = 0, nil, 0
+			case 13: // WriteZeroN
+				err := m.b.WriteZeroN(n)
+				if (err != nil) != (n > free(m)) {
+					t.Fatalf("WriteZeroN(%d) = %v; free %d", n, err, free(m))
+				}
+				if err == nil {
+					m.data = append(m.data, make([]byte, n)...)
+				}
+			case 14: // ReadFrom: to EOF, or full
+				k, err := m.b.ReadFrom(bytes.NewReader(mark))
+				want := min(n, free(m))
+				if int(k) != want || (err != nil) != (want < n) {
+					t.Fatalf("ReadFrom(%d bytes) = %d, %v; free %d", n, k, err, free(m))
+				}
+				m.data = append(m.data, mark[:want]...)
+			case 15: // Resize: the cursors move, the bytes stay
+				start, length := arg%64, n
+				room := m.head + m.size - m.reserved
+				if start > room || length > room-start {
+					if !panics(func() { m.b.Resize(start, length) }) {
+						t.Fatal("Resize past Cap did not panic")
+					}
+				} else {
+					m.b.Resize(start, length)
+					m.start = start
+					m.data = append([]byte(nil), m.b.Bytes()...)
+					if len(m.data) != length {
+						t.Fatalf("Resize(%d, %d) left %d bytes", start, length, len(m.data))
+					}
 				}
 			}
 			check(m)

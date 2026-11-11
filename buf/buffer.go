@@ -32,6 +32,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"unicode/utf8"
 )
 
 // ErrInvalidCount is returned when a source or destination reports a count
@@ -175,6 +176,29 @@ func (b *Buf) Reset() {
 	b.start, b.end, b.capacity = b.head, b.head, b.size
 }
 
+// FullReset empties the buffer and drops the headroom too: the data starts
+// at the very beginning, so all RawCap bytes are room, and any Reserve is
+// given back. (sing's Reset; go-netx's Reset keeps the headroom.)
+func (b *Buf) FullReset() {
+	b.start, b.end, b.capacity = 0, 0, b.size
+}
+
+// RawCap returns the room the buffer was obtained with, headroom included,
+// whatever Reserve has set aside: the most Cap can be.
+func (b *Buf) RawCap() int { return b.size }
+
+// Resize places the data at n bytes starting at position start of the
+// buffer, moving both cursors: for a protocol that fills a buffer out of
+// order. The arguments are a start and a length, as in sing. Bytes that
+// become data keep whatever they held. It panics unless
+// 0 <= start, 0 <= n and start+n <= Cap.
+func (b *Buf) Resize(start, n int) {
+	if start < 0 || n < 0 || start > b.capacity || n > b.capacity-start {
+		panic("buf: Resize(" + strconv.Itoa(start) + ", " + strconv.Itoa(n) + ") with capacity " + strconv.Itoa(b.capacity))
+	}
+	b.start, b.end = start, start+n
+}
+
 // Write appends p. It writes what fits and returns io.ErrShortBuffer if not
 // all of p did.
 func (b *Buf) Write(p []byte) (int, error) {
@@ -206,6 +230,126 @@ func (b *Buf) WriteByte(c byte) error {
 	return nil
 }
 
+// Read copies data into p and consumes what it copied, like io.Reader: it
+// returns io.EOF when the buffer is empty. Consuming moves the start
+// cursor (the bytes become headroom); nothing is copied within the buffer.
+// WriteTo, which io.Copy prefers, does not consume.
+func (b *Buf) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if b.IsEmpty() {
+		return 0, io.EOF
+	}
+	n := copy(p, b.data[b.start:b.end])
+	b.start += n
+	return n, nil
+}
+
+// ReadByte consumes and returns the first byte, or returns io.EOF.
+func (b *Buf) ReadByte() (byte, error) {
+	if b.IsEmpty() {
+		return 0, io.EOF
+	}
+	c := b.data[b.start]
+	b.start++
+	return c, nil
+}
+
+// ReadBytes consumes the first n bytes and returns them as a view of the
+// buffer, not a copy: valid until the buffer is written to, reset or
+// released. With fewer than n bytes it consumes nothing and returns io.EOF
+// if the buffer is empty, io.ErrUnexpectedEOF otherwise. It panics if n is
+// negative.
+func (b *Buf) ReadBytes(n int) ([]byte, error) {
+	if n < 0 {
+		panic("buf: ReadBytes(" + strconv.Itoa(n) + ")")
+	}
+	if n > b.Len() {
+		if b.IsEmpty() {
+			return nil, io.EOF
+		}
+		return nil, io.ErrUnexpectedEOF
+	}
+	v := b.data[b.start : b.start+n : b.start+n]
+	b.start += n
+	return v, nil
+}
+
+// Byte returns the data byte at position i. It panics unless 0 <= i < Len.
+func (b *Buf) Byte(i int) byte {
+	b.checkIndex("Byte", i, b.Len()-1)
+	return b.data[b.start+i]
+}
+
+// SetByte sets the data byte at position i. It panics unless 0 <= i < Len.
+func (b *Buf) SetByte(i int, c byte) {
+	b.checkIndex("SetByte", i, b.Len()-1)
+	b.data[b.start+i] = c
+}
+
+// To returns the first n bytes of the data. Like From and Range it returns
+// a view, with no capacity beyond its length, and panics outside 0..Len.
+func (b *Buf) To(n int) []byte {
+	b.checkIndex("To", n, b.Len())
+	return b.data[b.start : b.start+n : b.start+n]
+}
+
+// From returns the data from position i to its end.
+func (b *Buf) From(i int) []byte {
+	b.checkIndex("From", i, b.Len())
+	return b.data[b.start+i : b.end : b.end]
+}
+
+// Range returns the data from position i up to, not including, position j.
+func (b *Buf) Range(i, j int) []byte {
+	b.checkIndex("Range", j, b.Len())
+	b.checkIndex("Range", i, j)
+	return b.data[b.start+i : b.start+j : b.start+j]
+}
+
+// checkIndex panics unless 0 <= i <= max. Positions are checked against the
+// data, not the memory under it, so a wrong offset cannot reach the
+// headroom, the free space or a neighbour's bytes left in the class.
+func (b *Buf) checkIndex(op string, i, max int) {
+	if i < 0 || i > max {
+		panic("buf: " + op + " position " + strconv.Itoa(i) + " outside 0.." + strconv.Itoa(max))
+	}
+}
+
+// WriteRune appends the UTF-8 encoding of r (of U+FFFD if r is not a valid
+// rune) and returns its length. It writes nothing and returns
+// io.ErrShortBuffer if the whole encoding does not fit.
+func (b *Buf) WriteRune(r rune) (int, error) {
+	n := utf8.RuneLen(r)
+	if n < 0 {
+		n = utf8.RuneLen(utf8.RuneError)
+	}
+	if n > b.FreeLen() {
+		return 0, io.ErrShortBuffer
+	}
+	utf8.AppendRune(b.data[b.end:b.end], r)
+	b.end += n
+	return n, nil
+}
+
+// WriteZero appends one zero byte, like WriteByte(0).
+func (b *Buf) WriteZero() error { return b.WriteByte(0) }
+
+// WriteZeroN appends n zero bytes. It writes nothing and returns
+// io.ErrShortBuffer if they do not fit, and panics if n is negative.
+func (b *Buf) WriteZeroN(n int) error {
+	if n < 0 {
+		panic("buf: WriteZeroN(" + strconv.Itoa(n) + ")")
+	}
+	if n > b.FreeLen() {
+		return io.ErrShortBuffer
+	}
+	clear(b.data[b.end : b.end+n])
+	b.end += n
+	return nil
+}
+
 // ReadOnceFrom reads once from r into the free space and appends what it
 // read. It returns io.ErrShortBuffer, without reading, if the buffer is
 // full, and ErrInvalidCount, appending nothing, if r reports a count
@@ -229,9 +373,101 @@ func (b *Buf) ReadFullFrom(r io.Reader, n int) (int, error) {
 	if n < 0 || n > b.FreeLen() {
 		return 0, io.ErrShortBuffer
 	}
-	k, err := io.ReadFull(r, b.data[b.end:b.end+n])
-	b.end += k
-	return k, err
+	return b.readAtLeast(r, n, n)
+}
+
+// ReadAtLeastFrom reads from r into the free space until at least min
+// bytes have been appended, and keeps more if r offers it. It returns
+// io.ErrShortBuffer, without reading, if min does not fit. Like
+// io.ReadAtLeast, a source that ends early gives io.EOF if nothing was
+// read and io.ErrUnexpectedEOF otherwise; what was read is kept. With
+// min <= 0 it reads once, like ReadOnceFrom.
+func (b *Buf) ReadAtLeastFrom(r io.Reader, min int) (int, error) {
+	if min <= 0 {
+		return b.ReadOnceFrom(r)
+	}
+	if min > b.FreeLen() {
+		return 0, io.ErrShortBuffer
+	}
+	return b.readAtLeast(r, min, b.FreeLen())
+}
+
+// ReadFrom appends everything r has, until r returns io.EOF, which is
+// success (io.ReaderFrom, so io.Copy into a Buf uses it). The buffer does
+// not grow: if r has more than fits, ReadFrom fills the buffer and returns
+// io.ErrShortBuffer with the count stored. To tell that case from data
+// that fits exactly, it reads one more byte from r once the buffer is
+// full; on io.ErrShortBuffer that byte is gone from r. Like the other
+// Read*From methods it returns ErrInvalidCount for a count outside the
+// space given and io.ErrNoProgress for a source that keeps returning
+// (0, nil).
+func (b *Buf) ReadFrom(r io.Reader) (int64, error) {
+	var n int64
+	empty := 0
+	for {
+		p := b.data[b.end:b.capacity]
+		full := len(p) == 0
+		if full {
+			p = make([]byte, 1) // the probe; allocated only on this path
+		}
+		k, err := r.Read(p)
+		if k < 0 || k > len(p) {
+			return n, ErrInvalidCount
+		}
+		if full && k > 0 {
+			return n, io.ErrShortBuffer
+		}
+		b.end += k
+		n += int64(k)
+		if err == io.EOF {
+			return n, nil
+		}
+		if err != nil {
+			return n, err
+		}
+		if k > 0 {
+			empty = 0
+		} else if empty++; empty >= maxEmptyReads {
+			return n, io.ErrNoProgress
+		}
+	}
+}
+
+// maxEmptyReads is how many reads in a row may return (0, nil) before the
+// source is given up on with io.ErrNoProgress (bufio uses the same count).
+const maxEmptyReads = 100
+
+// readAtLeast appends at least min and at most max bytes from r; the
+// caller has checked 0 < min <= max <= FreeLen (min may be 0 only with
+// max 0). Unlike io.ReadAtLeast it does not trust r: a count outside the
+// space given returns ErrInvalidCount, leaving what was read before it,
+// and a run of empty reads returns io.ErrNoProgress instead of spinning.
+func (b *Buf) readAtLeast(r io.Reader, min, max int) (int, error) {
+	limit := b.end + max
+	n, empty := 0, 0
+	for n < min {
+		k, err := r.Read(b.data[b.end:limit])
+		if k < 0 || k > limit-b.end {
+			return n, ErrInvalidCount
+		}
+		b.end += k
+		n += k
+		if err != nil {
+			switch {
+			case n >= min:
+				return n, nil
+			case err == io.EOF && n > 0:
+				return n, io.ErrUnexpectedEOF
+			}
+			return n, err
+		}
+		if k > 0 {
+			empty = 0
+		} else if empty++; empty >= maxEmptyReads {
+			return n, io.ErrNoProgress
+		}
+	}
+	return n, nil
 }
 
 // ReadPacketFrom reads one datagram from c into the free space and appends

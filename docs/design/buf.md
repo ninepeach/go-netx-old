@@ -44,12 +44,24 @@ func (*Buf) Advance(n int)                   // drop n bytes in front
 func (*Buf) Truncate(n int)                  // keep the first n bytes
 func (*Buf) Reserve(n int); Unreserve(n int) // set aside / give back room at the end
 func (*Buf) Reset()                          // empty, original headroom and room
+func (*Buf) FullReset()                      // empty, no headroom, no reserve
+func (*Buf) Resize(start, n int)             // data at [start, start+n); panics past Cap
+func (*Buf) RawCap() int                     // room as obtained, whatever is reserved
+func (*Buf) Byte(i int) byte; SetByte(i int, c byte) // panic outside 0..Len-1
+func (*Buf) To(n int) []byte; From(i int) []byte; Range(i, j int) []byte // views; panic outside 0..Len
 func (*Buf) Write([]byte) (int, error)       // io.ErrShortBuffer when it does not fit
 func (*Buf) WriteString(string) (int, error); WriteByte(byte) error
+func (*Buf) WriteRune(rune) (int, error)     // UTF-8, never split
+func (*Buf) WriteZero() error; WriteZeroN(n int) error
+func (*Buf) Read([]byte) (int, error)        // io.Reader: consumes; io.EOF when empty
+func (*Buf) ReadByte() (byte, error)         // io.ByteReader
+func (*Buf) ReadBytes(n int) ([]byte, error) // consumes n, returns a view
 func (*Buf) ReadOnceFrom(io.Reader) (int, error)
 func (*Buf) ReadFullFrom(io.Reader, n int) (int, error)
+func (*Buf) ReadAtLeastFrom(io.Reader, min int) (int, error)
+func (*Buf) ReadFrom(io.Reader) (int64, error) // io.ReaderFrom: to EOF; ErrShortBuffer if more than fits
 func (*Buf) ReadPacketFrom(net.PacketConn) (int, net.Addr, error)
-func (*Buf) WriteTo(io.Writer) (int64, error)
+func (*Buf) WriteTo(io.Writer) (int64, error) // does not consume
 func (*Buf) Release()                        // nil-safe; unmanaged: only forgets
 
 func LenMulti([]*Buf) int; IsEmptyMulti([]*Buf) bool
@@ -144,12 +156,47 @@ outside and return `io.ErrShortBuffer` instead. `Advance` takes any
 non-negative n, up to `math.MaxInt`, and drops at most `Len` bytes; it never
 computes start+n, which could overflow.
 
+**sing's operations, go-netx's checks (D-29).** The general operations of
+sing's `Buffer` are provided under the same names, so code written
+against sing ports by renaming the type. Their semantics were checked one
+by one against sing and tightened where sing trusts the caller:
+
+| Operation | sing | go-netx |
+|---|---|---|
+| `Byte`, `SetByte`, `To`, `From`, `Range` | index the pooled array: a wrong offset reads the headroom, the free space or stale bytes | checked against the data, panic outside 0..Len; views have no spare capacity |
+| `ReadBytes(n)` | a view; `io.EOF` when short | a view; consumes nothing when short; `io.EOF` only when empty, else `io.ErrUnexpectedEOF` |
+| `Resize(start, n)` | sets both cursors, no checks | same arguments (start and length), panics past `Cap` |
+| `FullReset` / `Reset` | identical: cursors to 0, reserve returned | `FullReset` is that; `Reset` returns to the headroom the buffer was obtained with |
+| `RawCap` | size of the pooled array | room as obtained: a buffer never offers more than was asked for |
+| `WriteRune` | writes `byte(r)`: anything past ASCII is truncated | UTF-8, all or nothing |
+| `ReadAtLeastFrom` | returns `int64`; trusts the source | returns `int` like its siblings; checks the source |
+| `ReadFrom` | at a full buffer returns `(0, io.ErrShortBuffer)`, dropping the count, even when the data fitted exactly; loops forever on `(0, nil)` | exact fit is success; overflow returns the count with `io.ErrShortBuffer`; `io.ErrNoProgress` on a stalled source |
+| `WriteTo` | does not consume | the same: `Read` is the consuming path, and `io.Copy(w, b)`, which takes `WriteTo`, leaves the data |
+
+Not taken: `IncRef`/`DecRef`/`Leak` (D-25), raw-slice `Get`/`Put`/`Make`
+(only a Pool's own buffers go back to it), `ToOwned` (`Copy(b.Bytes())`),
+`WriteRandom` (no random source in buf), `Index` (in sing it is not a
+search but an empty slice at a position), and `Iovec`, which belongs with
+batched UDP sends because it ties buffer lifetime to a system call.
+
+`ReadFrom` makes `io.Copy(b, src)` take it instead of a `Write` loop. To
+keep that call's result (success when the data fits exactly), a full
+buffer reads one more byte from the source to see whether it has ended;
+on `io.ErrShortBuffer` that byte is gone from the source, as the chunk
+`io.Copy` would have read is. The probe is allocated only on that path:
+reading into a buffer with room allocates nothing (BUF-32).
+
 **Counts from outside are checked.** A reader, `PacketConn` or writer that
 reports a count outside 0..len(p) breaks the io contract; `ReadOnceFrom`,
 `ReadPacketFrom` and `WriteTo` return `ErrInvalidCount` and leave the
 cursors alone rather than move them past `Cap` or before the data.
 `WriteTo` turns a short write with a nil error into `io.ErrShortWrite`, as
-`stream.Writer.Flush` does (REG-30, REG-36).
+`stream.Writer.Flush` does (REG-30, REG-36). `ReadFullFrom`,
+`ReadAtLeastFrom` and `ReadFrom` use their own loop for the same reason:
+`io.ReadFull` trusts the source, so a wrong count moved the cursor past
+`Cap`, and a source returning `(0, nil)` forever spun forever (REG-39).
+After 100 empty reads in a row they return `io.ErrNoProgress`, as `bufio`
+does.
 
 **Contents are not zeroed** (cost). A new buffer is empty; callers write
 before they send. Sending bytes that were never written would leak a
@@ -190,11 +237,13 @@ the payload (`BenchmarkHeaderPath`).
 
 D-21 (power-of-two classes), D-24 (no memory limit in buf; supersedes
 D-05), D-25 (no reference counting), D-26 (largest pooled class 64KB), D-27
-(sing's default sizes as constants, not used inside go-netx).
+(sing's default sizes as constants, not used inside go-netx), D-29 (sing's
+general Buffer operations under the same names, with bounds and count
+checks).
 
 ## 8. Testing
 
-BUF-01…BUF-26, NF-11 (fuzz against a slice model of every cursor
+BUF-01…BUF-32, NF-11 (fuzz against a slice model of every cursor
 operation) in [docs/TESTING.md](../TESTING.md).
 
 ## 9. Open items
