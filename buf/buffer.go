@@ -51,6 +51,13 @@ var ErrInvalidCount = errors.New("buf: invalid count from Read, ReadFrom or Writ
 // these methods alias the buffer: they are valid until the next call that
 // changes it, and never after Release.
 //
+// Reading consumes, writing out does not: Read, ReadByte and ReadBytes move
+// the start cursor past what they return, while Bytes and WriteTo leave
+// the data in place. io.Copy(w, b) takes WriteTo, so a second io.Copy
+// sends the same data again, whereas io.ReadAll(b) empties b. This is
+// sing's behaviour (D-29); after WriteTo, call Advance(n) or Reset to
+// drop what was written.
+//
 // A Buf is not safe for concurrent use.
 type Buf struct {
 	data     []byte // the whole block; for a pooled buffer, its class size
@@ -190,13 +197,27 @@ func (b *Buf) RawCap() int { return b.size }
 // Resize places the data at n bytes starting at position start of the
 // buffer, moving both cursors: for a protocol that fills a buffer out of
 // order. The arguments are a start and a length, as in sing. Bytes that
-// become data keep whatever they held. It panics unless
-// 0 <= start, 0 <= n and start+n <= Cap.
+// were data keep their value; bytes that were not become zero, because a
+// pooled block still holds an earlier owner's bytes there (unlike sing,
+// which exposes them; REG-40). To take back bytes dropped with Advance or
+// Read, use ExtendHeader, which keeps them; to keep bytes written through
+// FreeBytes, use Extend. Unmanaged buffers (As, With) are the caller's
+// memory and keep their bytes. It panics unless 0 <= start, 0 <= n and
+// start+n <= Cap.
 func (b *Buf) Resize(start, n int) {
 	if start < 0 || n < 0 || start > b.capacity || n > b.capacity-start {
 		panic("buf: Resize(" + strconv.Itoa(start) + ", " + strconv.Itoa(n) + ") with capacity " + strconv.Itoa(b.capacity))
 	}
-	b.start, b.end = start, start+n
+	end := start + n
+	if b.pool != nil {
+		if hi := min(end, b.start); start < hi {
+			clear(b.data[start:hi]) // in front of the old data
+		}
+		if lo := max(start, b.end); lo < end {
+			clear(b.data[lo:end]) // behind it
+		}
+	}
+	b.start, b.end = start, end
 }
 
 // Write appends p. It writes what fits and returns io.ErrShortBuffer if not
@@ -233,7 +254,8 @@ func (b *Buf) WriteByte(c byte) error {
 // Read copies data into p and consumes what it copied, like io.Reader: it
 // returns io.EOF when the buffer is empty. Consuming moves the start
 // cursor (the bytes become headroom); nothing is copied within the buffer.
-// WriteTo, which io.Copy prefers, does not consume.
+// WriteTo, which io.Copy(w, b) takes instead of Read, does not consume:
+// see Buf.
 func (b *Buf) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
@@ -397,24 +419,34 @@ func (b *Buf) ReadAtLeastFrom(r io.Reader, min int) (int, error) {
 // not grow: if r has more than fits, ReadFrom fills the buffer and returns
 // io.ErrShortBuffer with the count stored. To tell that case from data
 // that fits exactly, it reads one more byte from r once the buffer is
-// full; on io.ErrShortBuffer that byte is gone from r. Like the other
-// Read*From methods it returns ErrInvalidCount for a count outside the
-// space given and io.ErrNoProgress for a source that keeps returning
-// (0, nil).
+// full. On io.ErrShortBuffer that byte is given back if r is an
+// io.ByteScanner (bufio.Reader, bytes.Reader, strings.Reader) and is
+// otherwise gone from r: on a stream such as a net.Conn, where losing it
+// desynchronises the protocol, read with ReadAtLeastFrom or ReadOnceFrom
+// instead. Like the other Read*From methods it returns ErrInvalidCount for
+// a count outside the space given and io.ErrNoProgress for a source that
+// keeps returning (0, nil).
 func (b *Buf) ReadFrom(r io.Reader) (int64, error) {
 	var n int64
+	var probe []byte // allocated once, only when the buffer is full
 	empty := 0
 	for {
 		p := b.data[b.end:b.capacity]
 		full := len(p) == 0
 		if full {
-			p = make([]byte, 1) // the probe; allocated only on this path
+			if probe == nil {
+				probe = make([]byte, 1)
+			}
+			p = probe
 		}
 		k, err := r.Read(p)
 		if k < 0 || k > len(p) {
 			return n, ErrInvalidCount
 		}
 		if full && k > 0 {
+			if s, ok := r.(io.ByteScanner); ok {
+				_ = s.UnreadByte() // best effort: r keeps the byte if it can
+			}
 			return n, io.ErrShortBuffer
 		}
 		b.end += k
@@ -485,7 +517,10 @@ func (b *Buf) ReadPacketFrom(c net.PacketConn) (int, net.Addr, error) {
 	return n, addr, err
 }
 
-// WriteTo writes the data to w. It does not consume it. A short write that
+// WriteTo writes the data to w. Unlike bytes.Buffer.WriteTo it does not
+// consume it, so the data can be sent again (to several peers, or after a
+// retryable error); call Advance(n) with the count to drop what was
+// written. A short write that
 // w reports with a nil error, which io.Writer forbids but some wrappers do,
 // returns io.ErrShortWrite; a count outside 0..Len returns ErrInvalidCount.
 func (b *Buf) WriteTo(w io.Writer) (int64, error) {
