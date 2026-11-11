@@ -12,7 +12,7 @@ The package is independent of `tcp` and `udp`. Applications may wrap a `tcp.Conn
 
 ## 2. Public API freeze gate
 
-Before coding, inventory all exported symbols in `stream` and their callers. Prefer a mechanical move retaining exported method signatures and behaviors. Any new fallible constructor or method required by bounded pools must be explicitly specified and migration-tested; do not silently alter existing semantics. Do not introduce a package named `bufio` alongside `stream` as two maintained implementations.
+Before coding, inventory all exported symbols in `stream` and their callers. Prefer a mechanical move retaining exported method signatures and behaviors. There is no bounded-pool API in V1 (D-24); do not introduce fallible constructors or change method signatures solely for a hypothetical bounded pool. In particular, retain `Add(b *buf.Buf)` and `AddShared(p []byte)` without error returns. Do not introduce a package named `bufio` alongside `stream` as two maintained implementations.
 
 The name `bufio` is also the name of Go's standard package. In importing applications use an explicit alias (for example `netxbufio "github.com/ninepeach/go-netx/bufio"`) wherever both are imported; do not claim they are interchangeable.
 
@@ -21,24 +21,31 @@ The name `bufio` is also the name of Go's standard package. In importing applica
 - `Peek` and `Fill` expose borrowed views valid until the next operation that may modify or recycle the backing buffer, or `Release`. Document precise lifetime in the exported method comments.
 - Preserve unread bytes across growth. `Max` limits logical buffered bytes, not necessarily the backing class capacity. Shrink is opportunistic and must never discard unread data.
 - Respect `io.Reader` semantics: data with a non-nil error is delivered before the error is reported where required by the existing contract; avoid busy loops on repeated `(0,nil)` and report `io.ErrNoProgress` according to a documented retry bound.
-- Bounded-pool acquisition failure must leave the Reader valid and its unread bytes intact. No hidden allocation fallback.
+- Use the existing unbounded `buf.Pool` contract. The application may separately enforce admission or memory budgets with `limit.Budget` (INT-07); a fallible bounded Reader is outside V1.
 - Release returns owned backing memory exactly once; do not release borrowed external storage.
 
 ## 4. Writer contract
 
-- `Add` transfers ownership of a `*buf.Buf` only when accepted; on failure ownership remains with the caller. `AddShared` borrows immutable storage until it has been written or discarded.
+- `Add(b *buf.Buf)` unconditionally queues the buffer and transfers ownership; it has no normal failure path and returns no error. `AddShared(p []byte)` queues a borrowed immutable slice and also returns no error. The caller must not modify shared storage until `Flush` or `Discard` returns.
 - Gather writes using `net.Buffers` where supported without bypassing wrappers or deadlines. Provide a safe ordinary `Write` fallback.
-- A partial write advances only the acknowledged byte count. If `Write` returns `n>0` and an error, retain exactly the unsent suffix. If `n==0,err==nil`, stop with a no-progress error rather than spin.
-- `Flush` errors must not drop unsent buffers; `Discard` releases owned buffers and clears references to shared buffers. Repeated `Flush` after partial failure cannot duplicate bytes.
+- `Flush` attempts the queued write in order and returns the acknowledged byte count and any error. On **any** write error or short write (including `(0, nil)` where bytes remain), report the error (`io.ErrShortWrite` for a nil-error short write), **release every owned buffer and clear all queued/shared references**, including unsent data. The Writer does not retry a failed batch; the caller decides whether to close the connection. This is an explicit Writer policy, not a claim that every `io.Writer` is irrecoverable.
+- Validate the reported count for both `io.Writer` and `BuffersWriter`: a count outside `0..bytes offered` is invalid and must not corrupt accounting. Preserve wrapper/TLS safety; do not bypass a wrapper to obtain writev.
+- `Discard` releases every queued owned buffer exactly once and clears shared references without writing. After `Flush` or `Discard`, no borrowed slice remains referenced by the Writer.
 - Reader and Writer instances are not concurrent-use-safe unless a method specifically documents otherwise; the caller serializes access.
 
-## 5. Integration with buf budget
+## 5. Memory budget integration
 
-Default unbounded mode preserves fast-path behavior. Any integration with a bounded `buf.Pool` must use `Acquire`/`AcquireHeadroom` and surface `ErrPoolExhausted`. Growth, compaction and error recovery must not temporarily violate the physical reserved-byte budget. Budget pressure may prevent growth; it must never corrupt unread/unsent data.
+D-24 remains in force: `buf.Pool` is unbounded and the V1 migration does
+not add a bounded pool. Applications may reserve from `limit.Budget`
+before allocation and return the reservation after `Release` (INT-07).
+When planning budgets, consider simultaneous old/new backing storage
+during Reader growth. The `bufio` Reader retains the current `stream`
+growth and error semantics; it does not introduce a new fallible pool
+constructor or silently change `Get`.
 
 ## 6. Performance and acceptance
 
-- Preserve existing stream unit tests and add error-injection tests for EOF with data, short writes, `(0,nil)`, mid-flush failures, writev fallback, wrappers/TLS, buffer ownership and bounded-budget failure.
+- Preserve existing stream unit tests and add error-injection tests for EOF with data, short writes, `(0,nil)`, mid-flush failures, writev fallback, wrappers/TLS, buffer ownership, invalid write counts, and UDP truncation behavior in `buf` tests.
 - Benchmark Reader and Writer on small/large payloads with ns/op, B/op, allocs/op, throughput and peak outstanding memory; explain regressions.
 - Run `go test ./...`, `go test -race ./...`, relevant `netxdebug` tests on Linux/macOS; Windows compile only. FreeBSD is not a V1 target.
-- Step 2 is complete only after there is **one** maintained implementation, imports and documentation are consistent, and tests pass. Do not change the package name before the Step 1 bounded-pool API is frozen.
+- Step 2 is complete only after there is **one** maintained implementation, imports and documentation are consistent, and tests pass. Do not gate the package migration on a bounded-pool API, which is deferred.
