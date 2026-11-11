@@ -400,3 +400,194 @@ func TestIndexedAccess(t *testing.T) {
 		mustPanic(t, name, fn)
 	}
 }
+
+// stallReader returns (0, nil) forever, which io.Reader discourages and
+// io.ReadFull and io.ReadAtLeast loop on.
+type stallReader struct{ calls int }
+
+func (r *stallReader) Read([]byte) (int, error) { r.calls++; return 0, nil }
+
+// chunkReader returns its data in pieces of at most step bytes, then err.
+type chunkReader struct {
+	data []byte
+	step int
+	err  error
+}
+
+func (r *chunkReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, r.err
+	}
+	n := copy(p, r.data[:min(r.step, len(r.data))])
+	r.data = r.data[n:]
+	return n, nil
+}
+
+// ReadAtLeastFrom reads until the buffer holds at least min more bytes,
+// using all the free space: it returns io.ErrShortBuffer without reading
+// when min does not fit, io.EOF when nothing came, io.ErrUnexpectedEOF
+// when fewer than min came (what did is kept), and the source's own error
+// otherwise; min <= 0 reads once. Like ReadFullFrom it refuses a source
+// that misbehaves instead of trusting it: a count outside the space given
+// returns ErrInvalidCount, and a source that keeps returning (0, nil)
+// returns io.ErrNoProgress instead of spinning.
+//
+// Checks: BUF-29
+func TestReadAtLeastAndFullFrom(t *testing.T) {
+	b := Get(16)
+	defer b.Release()
+	b.WriteString("ab")
+
+	// min reached across several reads; more than min is taken if offered.
+	n, err := b.ReadAtLeastFrom(&chunkReader{data: []byte("0123456789"), step: 3, err: io.EOF}, 7)
+	if n != 9 || err != nil || string(b.Bytes()) != "ab012345678" {
+		t.Fatalf("ReadAtLeastFrom(7) = %d, %v, %q", n, err, b.Bytes())
+	}
+	if n, err := b.ReadAtLeastFrom(bytes.NewReader([]byte("x")), 6); n != 0 || err != io.ErrShortBuffer || b.Len() != 11 {
+		t.Fatalf("min past FreeLen = %d, %v", n, err) // 5 free
+	}
+	b.Truncate(2)
+	if n, err := b.ReadAtLeastFrom(bytes.NewReader(nil), 1); n != 0 || err != io.EOF {
+		t.Fatalf("nothing to read = %d, %v", n, err)
+	}
+	if n, err := b.ReadAtLeastFrom(bytes.NewReader([]byte("xy")), 5); n != 2 || err != io.ErrUnexpectedEOF || string(b.Bytes()) != "abxy" {
+		t.Fatalf("short = %d, %v, %q", n, err, b.Bytes())
+	}
+	boom := errors.New("boom")
+	if n, err := b.ReadAtLeastFrom(&chunkReader{data: []byte("z"), step: 1, err: boom}, 3); n != 1 || err != boom {
+		t.Fatalf("source error = %d, %v", n, err)
+	}
+	if n, err := b.ReadAtLeastFrom(bytes.NewReader([]byte("12")), 0); n != 2 || err != nil { // one read
+		t.Fatalf("min 0 = %d, %v", n, err)
+	}
+	b.Truncate(2)
+
+	for name, read := range map[string]func(io.Reader) (int, error){
+		"ReadAtLeastFrom": func(r io.Reader) (int, error) { return b.ReadAtLeastFrom(r, 4) },
+		"ReadFullFrom":    func(r io.Reader) (int, error) { return b.ReadFullFrom(r, 4) },
+	} {
+		for _, bad := range []int{-1, 15, math.MaxInt} { // 14 bytes free
+			if n, err := read(badReader{bad}); n != 0 || !errors.Is(err, ErrInvalidCount) {
+				t.Fatalf("%s, count %d = %d, %v; want ErrInvalidCount", name, bad, n, err)
+			}
+			if string(b.Bytes()) != "ab" || b.FreeLen() != 14 {
+				t.Fatalf("%s, count %d changed the buffer: %q free %d", name, bad, b.Bytes(), b.FreeLen())
+			}
+		}
+		stall := &stallReader{}
+		if n, err := read(stall); n != 0 || err != io.ErrNoProgress {
+			t.Fatalf("%s from a stalled source = %d, %v after %d reads; want io.ErrNoProgress", name, n, err, stall.calls)
+		}
+	}
+	// ReadFullFrom takes exactly n even when the source offers more.
+	if n, err := b.ReadFullFrom(bytes.NewReader([]byte("0123456789")), 4); n != 4 || err != nil || string(b.Bytes()) != "ab0123" {
+		t.Fatalf("ReadFullFrom(4) = %d, %v, %q", n, err, b.Bytes())
+	}
+}
+
+// Resize places the data at [start, start+n) of the buffer, bounds
+// checked against Cap (so a Reserve is respected); FullReset empties the
+// buffer and drops the headroom and any Reserve, where Reset returns to
+// the headroom the buffer was obtained with; RawCap is the room the buffer
+// was obtained with (headroom included), whatever is reserved.
+//
+// Checks: BUF-30
+func TestResizeFullResetRawCap(t *testing.T) {
+	b := GetHeadroom(8, 24)
+	defer b.Release()
+	if b.RawCap() != 32 || b.Cap() != 32 {
+		t.Fatalf("RawCap %d Cap %d, want 32 32", b.RawCap(), b.Cap())
+	}
+	b.WriteString("payload")
+	b.Reserve(4)
+	if b.RawCap() != 32 || b.Cap() != 28 {
+		t.Fatalf("after Reserve: RawCap %d Cap %d, want 32 28", b.RawCap(), b.Cap())
+	}
+
+	b.Resize(2, 5) // start 2, five bytes of data: sing's (start, length)
+	if b.Start() != 2 || b.Len() != 5 || b.FreeLen() != 21 {
+		t.Fatalf("Resize(2,5): start %d len %d free %d", b.Start(), b.Len(), b.FreeLen())
+	}
+	b.Resize(0, 28) // everything up to Cap
+	if b.Start() != 0 || b.Len() != 28 || !b.IsFull() {
+		t.Fatalf("Resize(0,28): start %d len %d", b.Start(), b.Len())
+	}
+	b.Resize(28, 0)
+	if !b.IsEmpty() || b.Start() != 28 {
+		t.Fatalf("Resize(28,0): start %d len %d", b.Start(), b.Len())
+	}
+	mustPanic(t, "Resize into the reserve", func() { b.Resize(0, 29) })
+	mustPanic(t, "Resize past Cap", func() { b.Resize(20, 9) })
+	mustPanic(t, "Resize(-1, 1)", func() { b.Resize(-1, 1) })
+	mustPanic(t, "Resize(1, -1)", func() { b.Resize(1, -1) })
+	mustPanic(t, "Resize overflow", func() { b.Resize(math.MaxInt, 1) })
+
+	b.Reset() // back to the original headroom, reserve returned
+	if b.Start() != 8 || b.Len() != 0 || b.Cap() != 32 {
+		t.Fatalf("Reset: start %d len %d cap %d", b.Start(), b.Len(), b.Cap())
+	}
+	b.WriteString("x")
+	b.Reserve(4)
+	b.FullReset() // no headroom at all: every byte is room
+	if b.Start() != 0 || b.Len() != 0 || b.Cap() != 32 || b.FreeLen() != 32 {
+		t.Fatalf("FullReset: start %d len %d cap %d free %d", b.Start(), b.Len(), b.Cap(), b.FreeLen())
+	}
+	mustPanic(t, "ExtendHeader after FullReset", func() { b.ExtendHeader(1) })
+
+	w := With(make([]byte, 10)) // unmanaged: RawCap is the slice
+	if w.RawCap() != 10 {
+		t.Fatalf("With RawCap = %d", w.RawCap())
+	}
+}
+
+// WriteZero and WriteZeroN append zero bytes over whatever the memory
+// held; WriteRune appends the rune's UTF-8 encoding (U+FFFD for an invalid
+// rune). Each writes nothing and returns io.ErrShortBuffer when it does
+// not fit; a rune is never split.
+//
+// Checks: BUF-31
+func TestWriteZeroAndRune(t *testing.T) {
+	b := Get(16)
+	defer b.Release()
+	for i := range b.Extend(16) { // dirty the memory first
+		b.Bytes()[i] = 0xEE
+	}
+	b.Reset()
+	b.WriteString("a")
+	if err := b.WriteZero(); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.WriteZeroN(3); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(b.Bytes(), []byte{'a', 0, 0, 0, 0}) {
+		t.Fatalf("after zeros: %v", b.Bytes())
+	}
+	if err := b.WriteZeroN(0); err != nil || b.Len() != 5 {
+		t.Fatalf("WriteZeroN(0) = %v, Len %d", err, b.Len())
+	}
+	if err := b.WriteZeroN(12); err != io.ErrShortBuffer || b.Len() != 5 { // 11 free
+		t.Fatalf("WriteZeroN past Cap = %v, Len %d", err, b.Len())
+	}
+	mustPanic(t, "WriteZeroN(-1)", func() { b.WriteZeroN(-1) })
+
+	b.Reset()
+	for _, c := range []struct {
+		r    rune
+		want string
+	}{{'A', "A"}, {'é', "é"}, {'中', "中"}, {'😀', "😀"}, {-1, "�"}} {
+		b.Reset()
+		if n, err := b.WriteRune(c.r); n != len(c.want) || err != nil || string(b.Bytes()) != c.want {
+			t.Fatalf("WriteRune(%q) = %d, %v, %q; want %q", c.r, n, err, b.Bytes(), c.want)
+		}
+	}
+	b.Reset()
+	b.Extend(14) // two bytes left: a three-byte rune must not be split
+	if n, err := b.WriteRune('中'); n != 0 || err != io.ErrShortBuffer || b.Len() != 14 {
+		t.Fatalf("WriteRune without room = %d, %v, Len %d", n, err, b.Len())
+	}
+	b.Extend(2)
+	if err := b.WriteZero(); err != io.ErrShortBuffer {
+		t.Fatalf("WriteZero when full = %v", err)
+	}
+}

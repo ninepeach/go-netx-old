@@ -149,6 +149,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | TCP-30 | P0 | `Serve` 被调用之前已经 `Shutdown`：第一次 `Serve` 返回 nil、不接受连接，第二次返回 `ErrClosed`；监听已关闭；之后的 `Shutdown` 立即返回 nil | ✅ | `tcp.ServeAfterShutdownBeforeServe` | 调用顺序由测试固定，不依赖调度；REG-34 |
 | TCP-31 | P1 | `Serve` 之前 `Close`（中止）：`Serve` 仍返回 `ErrClosed`，重复调用也是；只有优雅的 `Shutdown` 算作已请求的停止 | ✅ | `tcp.ServeAfterCloseBeforeServeIsErrClosed` |  |
 | TCP-32 | P0 | 已接受的 `*tcp.Conn` 半关闭：客户端发完请求 `CloseWrite`，handler 读到 EOF 后回复并 `CloseWrite`，客户端读到完整回复和 EOF，连接未完全关闭；另一条连接上 `CloseRead` 之后 `Read` 立即返回、无数据、带错误（Unix 为 EOF，Windows 为 WSAESHUTDOWN），客户端仍可发送 | ✅ | `tcp.ConnHalfClose` | REG-38 |
+| REG-39 | buf | `ReadFullFrom` 走标准库 `io.ReadFull`，不检查来源返回的计数：来源在 4 字节空间里声称读了 15 字节时，16 字节的 buffer `Len` 变成 17、`FreeLen` 变成 -1（实测）；来源一直返回 (0, nil) 时永远空转（实测 2 秒后仍未返回）。REG-36 修了 `ReadOnceFrom`/`ReadPacketFrom`，漏了这条路径 |  | ✅ |
 | TCP-33 | P0 | `io.Copy` 经过 `*tcp.Conn` 双向转发（`*tcp.Conn`↔`*tcp.Conn`、`*tcp.Conn`↔`*net.TCPConn`）：每个方向 1MB 完整送达，各自的半关闭传到对端，两个 Copy 都在不完全关闭的情况下结束；`*tcp.Conn` 实现 `io.ReaderFrom`、`io.WriterTo`、`CloseWrite`、`CloseRead` | ✅ | `tcp.ConnRelayWithIOCopy` | Linux 上走 splice 由 strace 实测（见 design/tcp.md）；REG-38 |
 | TCP-34 | P1 | 底层不是 TCP（`NewServer` 配自定义 listener，这里是包装过的 `net.Pipe`）：`CloseWrite`/`CloseRead` 返回 `errors.ErrUnsupported` 且不关闭任何东西；`ReadFrom`/`WriteTo` 经过包装器自己的 `Read`/`Write`，包装器看到全部字节，数据完整 | ✅ | `tcp.ConnNonTCPUnderlying` |  |
 | TCP-35 | P0 | 两个方向独立半关闭，且半关闭不是关闭：`CloseWrite` 后 handler 仍收到客户端随后发来的数据；`CloseRead` 后仍可写，客户端收到；期间 `Stats().Active` 仍为 1，handler 继续运行 | ✅ | `tcp.ConnHalfCloseKeepsOtherDirection` |  |
@@ -362,6 +363,9 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | BUF-26 | P1 | `New`/`NewPacket` 从 `Default` 取空 buffer，容量分别为 `BufferSize`（32KB）和 `UDPBufferSize`（16KB），都在池化档位内 | ✅ | `buf.DefaultSizes` | D-27 |
 | BUF-27 | P1 | 消费型读取：`Read`（`io.Reader`，空时 `io.EOF`，空切片返回 0、nil）、`ReadByte`、`ReadBytes`（返回视图而非副本，容量不超出自身；不足 n 字节时不消费，空返回 `io.EOF`、不足返回 `io.ErrUnexpectedEOF`；负数 panic）只移动起始游标、不搬动数据，消费掉的字节变回头部空间；`io.Copy` 走 `WriteTo`，不消费（与 sing 一致） | ✅ | `buf.ConsumingReads` | D-29 |
 | BUF-28 | P1 | 按位置访问：`Byte`、`SetByte`、`To`、`From`、`Range` 的位置相对起始游标；超出 0..Len 一律 panic（头部空间、空闲空间都够不到）；返回的是视图且容量不超出自身 | ✅ | `buf.IndexedAccess` | D-29 |
+| BUF-29 | P0 | `ReadAtLeastFrom`：跨多次读取凑够 min，来源给得多就多收；min 放不下时不读、返回 `io.ErrShortBuffer`；没读到返回 `io.EOF`，不足 min 返回 `io.ErrUnexpectedEOF` 且保留已读部分；min<=0 只读一次。它和 `ReadFullFrom` 都不信任来源：计数越界返回 `ErrInvalidCount` 且缓冲区不变，来源连续返回 (0, nil) 时返回 `io.ErrNoProgress` 而不是空转 | ✅ | `buf.ReadAtLeastAndFullFrom` | REG-39 |
+| BUF-30 | P1 | `Resize(start, n)` 把数据放到 [start, start+n)，按 `Cap` 检查边界（尊重 `Reserve`），越界、负数、溢出都 panic；`FullReset` 清空并去掉头部空间和预留（`Reset` 则回到取出时的头部空间）；`RawCap` 是取出时的总空间，不受 `Reserve` 影响 | ✅ | `buf.ResizeFullResetRawCap` | D-29 |
+| BUF-31 | P1 | `WriteZero`/`WriteZeroN` 在脏内存上写出零字节；`WriteRune` 写 UTF-8 编码（1–4 字节，非法 rune 写 U+FFFD）；放不下时什么都不写并返回 `io.ErrShortBuffer`，rune 不会被截断；`WriteZeroN` 负数 panic | ✅ | `buf.WriteZeroAndRune` | D-29 |
 | REG-37 | buf | 超过 64KB 的非池化 buffer 在 Release 后仍引用底层内存（实测 65537 字节）：调用方若在结构体里留着这个 `*Buf`，整块内存无法回收（外部审查发现） |  | ✅ |
 
 ## 8.5 stream：流式读写
