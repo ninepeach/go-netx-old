@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -80,6 +81,17 @@ type Options struct {
 	// platforms dial without it (Supported().BindAddressNoPort). It is
 	// refused on listeners and on UDP.
 	BindAddressNoPort bool
+	// Transparent sets IP_TRANSPARENT (and IPV6_TRANSPARENT on IPv6
+	// sockets), Linux only, for transparent proxies: a listener receives
+	// connections and datagrams that iptables or nftables TPROXY diverted
+	// to it, whatever their destination address, and a socket can bind to
+	// an address that is not local. An accepted connection's LocalAddr is
+	// the address the client dialed; for UDP set udp.Options.Destination to
+	// learn each datagram's. Connections redirected with NAT (REDIRECT,
+	// DNAT) need no option: see OriginalDestination. It needs
+	// CAP_NET_ADMIN; without it the socket is not created (EPERM). Other
+	// platforms return an UnsupportedOptionError (D-30).
+	Transparent bool
 }
 
 // KeepAlive configures TCP keep-alive probes, which let a server notice a
@@ -254,6 +266,9 @@ func control(opts Options, outbound bool) func(string, string, syscall.RawConn) 
 		if opts == (Options{}) {
 			return nil
 		}
+		if opts.Transparent && runtime.GOOS != "linux" {
+			return &UnsupportedOptionError{Option: "Transparent", Platform: runtime.GOOS}
+		}
 		ipv6 := strings.HasSuffix(network, "6")
 		var ifindex int
 		if opts.Interface != "" && interfaceByIndex {
@@ -303,7 +318,7 @@ func checkNetwork(network string, o Options) error {
 }
 
 // isNil reports whether c is nil or an interface holding a nil pointer.
-func isNil(c BufferSetter) bool {
+func isNil(c any) bool {
 	if c == nil {
 		return true
 	}

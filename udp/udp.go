@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -56,6 +57,12 @@ type Packet struct {
 	// From is the sender. IPv4-mapped IPv6 addresses are unmapped so the
 	// same client always yields the same key.
 	From netip.AddrPort
+	// Dst is the address and port the datagram was sent to, set only with
+	// Options.Destination (otherwise zero). On a wildcard socket it is the
+	// local address the sender used; on a Transparent socket receiving
+	// TPROXY traffic it is the original destination. IPv4-mapped addresses
+	// are unmapped; IPv6 link-local addresses carry no zone.
+	Dst netip.AddrPort
 	// Reader is the index of the reader that received the datagram, in
 	// [0, Options.Readers). With ReusePort the kernel keeps a flow on one
 	// reader, so gateways can shard per-flow state by Reader without locks.
@@ -107,8 +114,16 @@ type Options struct {
 	// Batch reads one datagram per call, and the same configuration runs
 	// on a development Mac and a Linux server (D-18). Conn.Batch reports
 	// the size in effect.
-	Batch  int
-	Socket socket.Options
+	Batch int
+	// Destination reports each datagram's destination in Packet.Dst
+	// (Linux IP_RECVORIGDSTADDR / IPV6_RECVORIGDSTADDR): which local
+	// address a wildcard socket was reached on, or, with
+	// Socket.Transparent, the original destination of TPROXY traffic. It
+	// costs one control-message parse per datagram and no allocation.
+	// Other platforms return a *socket.UnsupportedOptionError from Listen
+	// (D-30).
+	Destination bool
+	Socket      socket.Options
 }
 
 // Stats is a point-in-time snapshot.
@@ -171,6 +186,7 @@ type Conn struct {
 	handler Handler
 	max     int
 	batch   int
+	dst     bool // Options.Destination
 	local   netip.AddrPort
 
 	mu      sync.Mutex
@@ -201,6 +217,9 @@ func Listen(ctx context.Context, network, address string, h Handler, o Options) 
 	if o.Batch > maxBatch {
 		return nil, fmt.Errorf("udp: Batch %d exceeds %d", o.Batch, maxBatch)
 	}
+	if o.Destination && !sys.DestinationSupported {
+		return nil, &socket.UnsupportedOptionError{Option: "Destination", Platform: runtime.GOOS}
+	}
 	if o.Readers == 0 {
 		o.Readers = 1
 	}
@@ -223,7 +242,7 @@ func Listen(ctx context.Context, network, address string, h Handler, o Options) 
 		o.Batch = sys.DefaultBatch
 	}
 	lc := socket.ListenConfig(o.Socket)
-	c := &Conn{handler: h, max: o.MaxPacket, batch: o.Batch, done: make(chan struct{}), closing: make(chan struct{}), dropsOn: true}
+	c := &Conn{handler: h, max: o.MaxPacket, batch: o.Batch, dst: o.Destination, done: make(chan struct{}), closing: make(chan struct{}), dropsOn: true}
 	for i := 0; i < nsock; i++ {
 		pc, err := lc.ListenPacket(ctx, network, address)
 		if err != nil {
@@ -235,6 +254,16 @@ func Listen(ctx context.Context, network, address string, h Handler, o Options) 
 		if err := raiseSendBuffer(uc, o.Socket.SendBuffer); err != nil {
 			c.closeSockets()
 			return nil, err
+		}
+		if o.Destination {
+			rc, err := uc.SyscallConn()
+			if err == nil {
+				err = sys.EnableDestination(rc)
+			}
+			if err != nil {
+				c.closeSockets()
+				return nil, err
+			}
 		}
 		if i == 0 {
 			// Bind the remaining sockets to the resolved port so ":0" works.
@@ -342,6 +371,9 @@ func (c *Conn) read(reader, sock int) {
 		st.recvBytes.Add(uint64(n))
 		p.Data = data[:n]
 		p.From = netip.AddrPortFrom(from.Addr().Unmap(), from.Port())
+		if c.dst {
+			p.Dst, _ = sys.Destination(oob[:oobn])
+		}
 		c.handler(c, p)
 	}
 }
@@ -389,6 +421,9 @@ func (c *Conn) readBatch(reader, sock int) {
 			st.recvBytes.Add(uint64(size))
 			p.Data = bufs[i][:size]
 			p.From = from
+			if c.dst {
+				p.Dst, _ = sys.Destination(oob)
+			}
 			c.handler(c, p)
 		}
 	}

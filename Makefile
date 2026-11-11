@@ -55,7 +55,7 @@ FUZZTIME ?= 30s
 # Minimizing a new input can take up to 60s by default and shows up as
 # 0 execs/sec; cap it so the fuzz time goes to fuzzing.
 FUZZMIN ?= 5s
-FUZZ_TARGETS := FuzzDropCount:./internal/sys FuzzTableOps:./flow FuzzRingOps:./queue \
+FUZZ_TARGETS := FuzzDropCount:./internal/sys FuzzDestination:./internal/sys FuzzTableOps:./flow FuzzRingOps:./queue \
 	FuzzGetRelease:./buf FuzzReplyAndWriteTo:./udp FuzzReader:./stream
 
 fuzz:

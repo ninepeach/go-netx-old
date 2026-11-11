@@ -109,6 +109,8 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | SOCK-33 | P1 | `RoutingMark`：Linux 有 CAP_NET_ADMIN 时读回 `SO_MARK`，没有时拨号以 EPERM 失败而不是不打标记；其他平台返回 `UnsupportedOptionError` | ✅ | `socket.RoutingMarkReadBackLinux`<br>`socket.RoutingMark` | D-28 |
 | SOCK-34 | P1 | `DontFragment`：TCP 上是配置错误；UDP 上 IPv4、IPv6、双栈套接字读回（Linux 双栈两项都设，macOS 按族，Windows 双栈两项都设） | ✅ | `socket.DontFragmentNetworks`<br>`socket.DontFragmentReadBackDarwin`<br>`socket.DontFragmentReadBackLinux`<br>`socket.DontFragmentReadBackWindows` | D-28 |
 | SOCK-35 | P1 | `BindAddressNoPort`：带 LocalAddr 的拨号在所有平台成功；Linux 读回 `IP_BIND_ADDRESS_NO_PORT`，`Supported().BindAddressNoPort` 仅 Linux 为 true；监听器和 UDP 上是配置错误 | ✅ | `socket.BindAddressNoPortReadBackLinux`<br>`socket.BindAddressNoPort` | D-28 |
+| SOCK-36 | P1 | `Transparent`：Linux 有 CAP_NET_ADMIN 时 IPv4 套接字读回 `IP_TRANSPARENT`，IPv6 和双栈套接字两项都设；没有权限时以 EPERM 失败而不是不设；以 root 运行时，透明监听收到 TPROXY 转来的、目标地址不在本机的连接，accept 出来的连接 `LocalAddr` 是客户端拨的地址；其他平台返回 `UnsupportedOptionError`（D-30） | ✅ | `socket.TransparentListenerNetfilter`<br>`socket.TransparentReadBackLinux`<br>`socket.Transparent` | 读回和 TPROXY 端到端只在 root 下运行：CI 的 netfilter 步骤用 sudo 跑 |
+| SOCK-37 | P1 | `OriginalDestination`：iptables REDIRECT 之后返回客户端原本拨的地址（IPv4、IPv6、双栈监听上的 IPv4 客户端，后者走 IPv4 conntrack 且返回不带映射的地址）；没有 NAT 时返回连接本身的地址，conntrack 未加载或没有记录时返回错误而不是地址；nil 和 typed nil 连接返回错误；其他平台返回 `UnsupportedOptionError` | ✅ | `socket.OriginalDestinationDualStackLinux`<br>`socket.OriginalDestination`<br>`socket.RedirectOriginalDestinationNetfilter` | REDIRECT 端到端只在 root 下运行（CI netfilter 步骤） |
 
 ## 3. tcp：TCP 传输
 
@@ -205,6 +207,9 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | UDP-38 | P1 | 多个 reader 共用一个 socket（`Readers` > 1 且未开 ReusePort）时，`Batch` 默认取 1，显式设置的值照用 | ✅ | `udp.BatchDefaultWhenReadersShareASocket` |  |
 | UDP-39 | P0 | `Serve` 被调用之前已经 `Shutdown`：第一次 `Serve` 返回 nil、不读取，第二次返回 `ErrClosed`；之后 `WriteTo` 返回 `ErrClosed`，再次 `Shutdown` 立即返回 nil | ✅ | `udp.ServeAfterShutdownBeforeServe` | 调用顺序由测试固定；REG-34 |
 | UDP-40 | P1 | `Serve` 之前 `Close`：`Serve` 仍返回 `ErrClosed`，重复调用也是 | ✅ | `udp.ServeAfterCloseBeforeServeIsErrClosed` |  |
+| UDP-41 | P1 | `Options.Destination`：`Packet.Dst` 是数据报发往的地址和端口，通配地址的 socket 能区分 127.0.0.1 和 127.0.0.2，双栈 socket 上的 IPv4 报告为不带映射的地址；批量和单包两条读取路径都带；不开时 `Dst` 为零值；非 Linux 平台 `Listen` 返回 `UnsupportedOptionError`（D-30） | ✅ | `udp.Destination` |  |
+| UDP-42 | P1 | 开启 `Destination` 后 handler 路径仍然零分配（批量和单包） | ✅ | `udp.DestinationDoesNotAllocate` | 仅 Linux |
+| UDP-43 | P1 | `Transparent` 加 `Destination` 的 UDP socket 收到 TPROXY 从非本机地址转来的数据报，`Packet.Dst` 是原目标地址（批量和单包） | ✅ | `udp.TProxyDestinationNetfilter` | 只在 root 下运行（CI netfilter 步骤） |
 
 ### 4.2 发送与 Reply
 
@@ -419,6 +424,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | SYS-04 | P1 | `counter.Max` 在并发下单调不减 | ✅ | `counter.CounterMaxConcurrent`<br>`counter.CounterOperations` |  |
 | SYS-05 | P0 | `BatchReader` 一次调用返回已排队的全部数据报（不等凑满），超过批量时分多次读出且顺序不变；每个数据报的长度、截断标志、来源地址、丢包计数各自正确；Close 能唤醒阻塞的 Read；Read 不分配内存 | ✅ | `sys.BatchReaderDoesNotAllocate`<br>`sys.BatchReaderReadsQueuedDatagrams` | 仅 Linux |
 | SYS-06 | P1 | sockaddr 解析：IPv4、IPv6、IPv4 映射地址还原、链路本地地址的 zone（接口名，未知接口用数字）、未知地址族 | ✅ | `sys.BatchReaderAddressParsing` | 仅 Linux；用构造的 sockaddr 测试，当前环境没有 IPv6 网络 |
+| SYS-07 | P1 | `Destination` 解析 `IP_ORIGDSTADDR` 和 `IPV6_ORIGDSTADDR`：与丢包计数并存时都能找到，IPv4 映射地址还原；忽略无关项，拒绝过短的 sockaddr、族不符和虚报长度；零分配 | ✅ | `sys.DestinationParse` | 仅 Linux |
 | OBS-01 | P0 | TCP Stats：Accepted、Active、Closed、Rejected | ✅ | `tcp.AdmitRejects`<br>`tcp.EchoAndStats` |  |
 | OBS-02 | P1 | TCP Stats：AcceptErrors | ✅ | `tcp.TemporaryAcceptErrorsBackOffAndStopPromptly` |  |
 | OBS-03 | P0 | UDP Stats：收发的包数和字节数 | ✅ | `udp.Echo` |  |
@@ -541,6 +547,7 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | D-25 | buf 不做引用计数 | sing 的 `IncRef`/`DecRef` 只计数：计数大于 0 时 `Release` 不做事，减到 0 也不会自动释放，漏一次就泄漏。共享的不可变数据已有 `stream.Writer.AddShared`；真需要共享所有权时，再按“最后一个 Release 才归还”实现 |
 | D-22 | `Table.Close` 是永久关闭，之后 `GetOrOpen` 返回 `(nil, false)` | 原来的 Close 只是清空：Run 因 ctx 结束返回后，仍在运行的 UDP reader 会继续插入 flow，这些 flow 再也没人清理（REG-33）。永久关闭让“Run 返回后表里没有 flow、每个 flow 都收到 OnClose”成立。代价：行为变化，Close 之后不能再复用这张表；需要清空重用的调用方新建一张表 |
 | D-23 | 新增可选的 `TableOptions.MaxFlows`（默认 0 不限） | UDP 网关每个源地址一个 flow，伪造源地址的洪水会让表在空闲超时内无界增长。上限满时 `GetOrOpen` 返回 `(nil, false)`，由调用方丢包，并用 `Refused()` 计数；已有 flow 不受影响。只在创建时多一次原子加减，查找路径不变（实测 `GetOrOpen` 已有 key、`GetAndTouch` 前后差异在噪声 ±10% 内）。不做淘汰旧 flow 的 LRU：那会让攻击者挤掉真实会话 |
+| D-30 | sing 的透明代理与原目标地址只做 Linux：`socket.Options.Transparent`、`socket.OriginalDestination`、`udp.Options.Destination`（`Packet.Dst`）；macOS 的 pf 查询、回写 socket（TProxyWriteBack）不做 | 这三项都是改变行为的选项，按 D-18 在做不到的平台上报错。macOS 上取 NAT 前地址要对 /dev/pf 做 `DIOCNATLOOK` ioctl，结构体随系统版本变化、需要 root，网关不在 macOS 上部署。UDP 透明代理回包要以原目标地址为源，需要每个目标一个绑定该地址的透明 socket，这是网关的 flow 管理，等有使用方再做。`Destination` 不依赖 TPROXY，通配地址的 socket 也能用，所以放在 udp 而不是绑在 `Transparent` 上；IP_TRANSPARENT 需要 CAP_NET_ADMIN，而 IP_RECVORIGDSTADDR 不需要 |
 
 ## 12.1 文档一致性
 
@@ -560,7 +567,7 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | NF-04 | Stress | UDP 高并发读写，并真正触发内核丢包 | ✅ | `udp.StressUDPEchoManySenders` | `make stress` |
 | NF-05 | Stress | Flow 并发创建与清理 | ✅ | `flow.ActiveFlowSurvivesSweep`<br>`flow.ConcurrentRemovalClosesFlowOnce`<br>`flow.GetOrOpenConcurrentSingleCreation`<br>`flow.StressTableChurn` | `make stress` |
 | NF-06 | Stress | Queue 多生产者、多消费者 | ✅ | `queue.ConcurrentNoLoss`<br>`queue.MultiConsumerNoLossNoDuplicate` |  |
-| NF-07 | Fuzz | `DropCount` 解析任意字节不会 panic | ✅ | `sys.FuzzDropCount` | 种子语料随 `go test` 运行；`make fuzz` 对每个目标做长时间 fuzz |
+| NF-07 | Fuzz | `DropCount` 和 `Destination` 解析任意字节不会 panic，找到的地址有效且不带映射 | ✅ | `sys.FuzzDestination`<br>`sys.FuzzDropCount` | 种子语料随 `go test` 运行；`make fuzz` 对每个目标做长时间 fuzz |
 | NF-08 | Fuzz | UDP 的 Reply 和 WriteTo 接收任意参数都不会 panic，只返回文档列出的错误 | ✅ | `udp.FuzzReplyAndWriteTo` | 种子语料随 `go test` 运行；`make fuzz` 对每个目标做长时间 fuzz |
 | NF-09 | Fuzz | Flow 表的随机操作序列与模型一致，epoch 有效，OnClose 恰好一次 | ✅ | `flow.FuzzTableOps` | 种子语料随 `go test` 运行；`make fuzz` 对每个目标做长时间 fuzz |
 | NF-10 | Fuzz | Queue 的随机操作序列与模型一致：FIFO、容量、溢出策略、Stats | ✅ | `queue.FuzzRingOps` | 种子语料随 `go test` 运行；`make fuzz` 对每个目标做长时间 fuzz |

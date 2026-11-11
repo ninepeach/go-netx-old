@@ -11,10 +11,13 @@ import (
 // which the syscall package does not define.
 const ipBindAddressNoPort = 24
 
+// ipv6Transparent is IPV6_TRANSPARENT (<linux/in6.h>).
+const ipv6Transparent = 75
+
 // Linux binds by name (SO_BINDTODEVICE), so no index lookup is needed.
 const interfaceByIndex = false
 
-// applyControl sets Interface, RoutingMark, DontFragment and
+// applyControl sets Interface, RoutingMark, DontFragment, Transparent and
 // BindAddressNoPort. Linux applies the IPv4-level options to IPv4-mapped
 // traffic on an IPv6 socket, so a dual-stack socket gets both.
 func applyControl(fd uintptr, opts Options, ipv6 bool, _ int) error {
@@ -37,6 +40,16 @@ func applyControl(fd uintptr, opts Options, ipv6 bool, _ int) error {
 		}
 		if err := syscall.SetsockoptInt(s, syscall.IPPROTO_IP, syscall.IP_MTU_DISCOVER, syscall.IP_PMTUDISC_DO); err != nil {
 			return os.NewSyscallError("setsockopt IP_MTU_DISCOVER", err)
+		}
+	}
+	if opts.Transparent {
+		if ipv6 {
+			if err := syscall.SetsockoptInt(s, syscall.SOL_IPV6, ipv6Transparent, 1); err != nil {
+				return os.NewSyscallError("setsockopt IPV6_TRANSPARENT", err)
+			}
+		}
+		if err := syscall.SetsockoptInt(s, syscall.SOL_IP, syscall.IP_TRANSPARENT, 1); err != nil {
+			return os.NewSyscallError("setsockopt IP_TRANSPARENT", err)
 		}
 	}
 	if opts.BindAddressNoPort {
