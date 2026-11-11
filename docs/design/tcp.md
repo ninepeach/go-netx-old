@@ -239,3 +239,22 @@ TCP-01…TCP-27, DIAL-01…DIAL-08, STREAM-14, OBS-01/02/06, NF-03/13 in
 ## 9. Open items
 
 - PROXY protocol for the real client address behind L4 balancers.
+
+## V1 stabilization addendum — transport lifecycle and API review
+
+Use the existing `tcp` API and Go netpoller; do **not** import sing's proxy, dial strategy, protocol framing, or custom poller into the transport. The transport must remain compatible with `net.Conn` and `io.Copy` optimization paths.
+
+### Connection and admission invariants
+
+- Admission is local, non-blocking and deterministic: reserve a global/per-IP slot before exposing a connection; if the next check or `Admit` rejects, release **all** acquired slots exactly once. Accept, handler start, handler return, Close and Abort races must not double-release or leak.
+- Normalize IPv4-mapped addresses and apply the documented IPv6 prefix policy consistently. Reject counters count actual rejected connections, not retries or successful accepts.
+- A Conn must implement deadline, partial read/write, half-close and Close behavior consistent with `net.Conn`. Preserve `ReadFrom`/`WriteTo` fast paths only when they do not bypass wrappers, deadlines or accounting. Do not make assumptions about a TLS-wrapped connection exposing raw file descriptors.
+- No per-connection buffer is allocated by the server merely because a connection is idle. Application handlers choose whether to compose `bufio`.
+
+### Three-phase shutdown
+
+`StopAccept -> Drain -> Abort` is a state machine, not three independent closers. The first transition closes the listener and publishes `Draining()` exactly once; it must prevent new admitted work. Drain waits for existing handlers until the shutdown context expires. Abort closes remaining connections and waits for bounded cleanup. Concurrent `Serve`, `Shutdown`, `Close`, parent cancellation and handler completion must have deterministic idempotent outcomes; the first fatal serve error remains observable. A drain signal alone must not prematurely cancel handlers.
+
+### Acceptance
+
+Cover dial cancellation, DNS/connect failures, deadlines, EOF and half-close, wrapped connections, `io.Copy` fast paths, listener-close accept races, `MaxConnsPerIP` under contention, shutdown before Serve, multiple concurrent Shutdown callers, blocked handlers, and no leaked slots/goroutines. Run race tests and 1/10k-connection load tests where CI resources permit; retain baseline throughput/allocations. No framing, sessions, retries or application callbacks added for convenience.
