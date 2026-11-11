@@ -152,3 +152,16 @@ STREAM-01…STREAM-20, NF-20 (fuzz) in [docs/TESTING.md](../TESTING.md).
 ## 9. Open items
 
 None.
+
+## V1 stabilization addendum — proposed consolidation into `bufio`
+
+**Current implementation is `stream`; this section is a design target, not a claim that a `bufio` package already exists.** Evaluate moving the mature Reader/Writer implementation to `bufio` without maintaining two competing implementations. The name change is a planned API-breaking change and must be explicitly approved against the architecture freeze before coding. Until migration, `stream` remains authoritative and DOC-02 checks must continue to pass.
+
+- Reader: preserve Peek, Fill, Buffered, Discard, Read, Shrink and Release semantics; borrowed Peek/Fill slices are invalidated by the next mutating operation or Release. Idle buffer stays small; Max is a strict logical upper bound. A failed grow under bounded `buf.Pool` must preserve unread bytes and the original buffer.
+- Writer: `Add(*buf.Buf)` transfers ownership **only on success**; `AddShared([]byte)` borrows immutable bytes until fully flushed or discarded. Explicitly define whether Add may fail for closed writer / queue limits before implementation. A failed Add leaves the caller responsible for Release.
+- Flush: handle `(n>0,err!=nil)`, short writes, `(0,nil)` no-progress, partial writev and wrapper-safe fallback; consume only bytes confirmed written. Retain the remainder and its ownership after an error, so a retry cannot duplicate or lose bytes. Discard releases only owned buffers, not shared slices.
+- Concurrency: Reader and Writer are not implicitly safe for simultaneous calls unless an explicit API contract says so. Do not add a mutex to every hot-path method solely for convenience.
+- Integrate bounded `buf.Pool` only via explicit fallible acquisition; no hidden `Get` fallback. Test low-memory growth failure, shrink and Release under budget pressure.
+- Migration: decide one canonical package; update imports, architecture, docs and tests together in Step 2. Do not ship an indefinitely duplicated `stream` and `bufio` implementation. Preserve names and behavior where feasible; document every unavoidable breaking change.
+
+**Acceptance:** existing stream tests must remain green before and after migration, plus partial writes, writer ownership, EOF with bytes, 0-progress readers/writers, TLS/wrapped writers, bounded-pool exhaustion, race and benchmark comparisons. No framing or protocol parsing.
