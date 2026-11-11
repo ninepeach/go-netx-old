@@ -168,3 +168,20 @@ run on an IPv6 host yet.
   one peer; see the QUIC research note.
 - PKTINFO, so `Reply` uses the local address the datagram was sent to on
   multi-homed hosts bound to a wildcard address.
+
+## V1 stabilization addendum — datagram integrity and packet ownership
+
+Keep the existing reader-goroutine/inline-handler model. Sing's packet-buffer patterns are a comparison point, not a reason to introduce a generic packet queue or a per-datagram goroutine.
+
+### Packet contract
+
+- `Packet` and `Packet.Data` are **borrowed**. The complete Packet (including address metadata) is valid only during its Handler invocation. A handler retaining data must copy it before returning. Do not expose a Release method for borrowed receive slots.
+- A read buffer slot cannot be reused until its corresponding inline Handler has returned. With `recvmmsg`, every slot of a batch is distinct, and no subsequent read overwrites a still-running callback's bytes.
+- A truncated datagram is **never delivered** as complete data. Distinguish an empty valid datagram from truncation and from a socket read error. `MaxPacket` is receive capacity, while `MaxDatagram` bounds public send/receive policy; document how oversize inbound packets are counted.
+- `Reply` must use the receiving socket, and its **source/local address semantics must be honest**: on a wildcard-bound multi-homed socket, socket affinity alone does not guarantee the original destination IP. Until PKTINFO is implemented and tested, explicitly document that limitation; do not claim correct local-source selection. PKTINFO support is a separately reviewed behavior change, not an implicit part of batch optimization.
+- Linux `recvmmsg` and drop counters are optional performance/observability capabilities. macOS must keep equivalent packet correctness via the single-message path. A reader's long-running Handler can delay Close/Shutdown; do not claim it is forcibly interruptible.
+- Keep send batching/GSO, retransmission, ordering, fragmentation/reassembly, internal queues, and flow/session tables out of V1.
+
+### Acceptance
+
+Test 0/1/max/oversize payloads, truncated packets, IPv4 and IPv6 including zones, wildcard/multihomed replies (document unsupported semantics), close during blocked read, close during Handler, repeated shutdown, shared socket vs ReusePort, Linux batch sizes 1/8/32, kernel drop counter wrap and reader affinity. Compare B/op and allocs/op on hot receive paths; zero **per-datagram** allocation remains the target, verified rather than assumed. Mark IPv6 coverage unverified until run on a capable host.
