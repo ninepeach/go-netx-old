@@ -392,6 +392,47 @@ func (b *Buf) ReadAtLeastFrom(r io.Reader, min int) (int, error) {
 	return b.readAtLeast(r, min, b.FreeLen())
 }
 
+// ReadFrom appends everything r has, until r returns io.EOF, which is
+// success (io.ReaderFrom, so io.Copy into a Buf uses it). The buffer does
+// not grow: if r has more than fits, ReadFrom fills the buffer and returns
+// io.ErrShortBuffer with the count stored. To tell that case from data
+// that fits exactly, it reads one more byte from r once the buffer is
+// full; on io.ErrShortBuffer that byte is gone from r. Like the other
+// Read*From methods it returns ErrInvalidCount for a count outside the
+// space given and io.ErrNoProgress for a source that keeps returning
+// (0, nil).
+func (b *Buf) ReadFrom(r io.Reader) (int64, error) {
+	var n int64
+	empty := 0
+	for {
+		p := b.data[b.end:b.capacity]
+		full := len(p) == 0
+		if full {
+			p = make([]byte, 1) // the probe; allocated only on this path
+		}
+		k, err := r.Read(p)
+		if k < 0 || k > len(p) {
+			return n, ErrInvalidCount
+		}
+		if full && k > 0 {
+			return n, io.ErrShortBuffer
+		}
+		b.end += k
+		n += int64(k)
+		if err == io.EOF {
+			return n, nil
+		}
+		if err != nil {
+			return n, err
+		}
+		if k > 0 {
+			empty = 0
+		} else if empty++; empty >= maxEmptyReads {
+			return n, io.ErrNoProgress
+		}
+	}
+}
+
 // maxEmptyReads is how many reads in a row may return (0, nil) before the
 // source is given up on with io.ErrNoProgress (bufio uses the same count).
 const maxEmptyReads = 100

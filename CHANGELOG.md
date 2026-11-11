@@ -20,6 +20,13 @@
 - buf: sing's default sizes `BufferSize` (32KB) and `UDPBufferSize` (16KB)
   with `New()` and `NewPacket()` (D-27). go-netx itself does not use them;
   `stream.Reader` keeps its 512B idle buffer.
+- buf: the general operations of sing's `Buffer`, under the same names
+  and with bounds and count checks (D-29): `Read`, `ReadByte`, `ReadBytes`,
+  `Byte`, `SetByte`, `To`, `From`, `Range`, `Resize`, `FullReset`,
+  `RawCap`, `WriteRune`, `WriteZero`, `WriteZeroN`, `ReadAtLeastFrom`,
+  `ReadFrom`. `*Buf` is now an `io.Reader`, `io.ByteReader` and
+  `io.ReaderFrom`; `io.Copy(b, src)` takes `ReadFrom`, with the same
+  results as before.
 - buf: batch helpers after sing's `multi.go`: `LenMulti`, `IsEmptyMulti`,
   `ToSliceMulti`, `CopyMulti`, `ReleaseMulti`.
 
@@ -166,6 +173,10 @@
 
 ### Fixed
 
+- buf: `ReadFullFrom` trusted the source's byte count (a wrong count left
+  the buffer with `Len` past `Cap`) and spun forever on a source returning
+  `(0, nil)`. It now returns `ErrInvalidCount` and `io.ErrNoProgress`
+  (REG-39).
 - tcp: half-close on an accepted `*tcp.Conn` was silently skipped by code
   that checks for `CloseWrite` (the embedded `net.Conn` interface hid it),
   so the peer never saw a FIN, and `io.Copy` through it never used splice

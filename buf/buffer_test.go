@@ -591,3 +591,104 @@ func TestWriteZeroAndRune(t *testing.T) {
 		t.Fatalf("WriteZero when full = %v", err)
 	}
 }
+
+// onlyReader hides every method but Read, so io.Copy has to use the
+// destination's ReadFrom.
+type onlyReader struct{ io.Reader }
+
+// stallAfter returns its data, then (0, nil) forever.
+type stallAfter struct{ data []byte }
+
+func (r *stallAfter) Read(p []byte) (int, error) {
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+// ReadFrom appends everything r has, to EOF, and reports EOF as success
+// (io.ReaderFrom). Data that exactly fills the buffer is success too: only
+// when r has more than fits does it return io.ErrShortBuffer, with the
+// buffer full and the count of what was stored. A source error comes back
+// with the bytes read before it; a count outside the space returns
+// ErrInvalidCount; a source that keeps returning (0, nil) returns
+// io.ErrNoProgress, also when the buffer is already full. io.Copy into a
+// *Buf takes this path and gives the same results.
+//
+// Checks: BUF-32
+func TestReadFrom(t *testing.T) {
+	var _ io.ReaderFrom = (*Buf)(nil)
+	b := Get(16)
+	defer b.Release()
+	b.WriteString("ab")
+
+	if n, err := b.ReadFrom(&chunkReader{data: []byte("0123456"), step: 3, err: io.EOF}); n != 7 || err != nil || string(b.Bytes()) != "ab0123456" {
+		t.Fatalf("to EOF = %d, %v, %q", n, err, b.Bytes())
+	}
+	if n, err := b.ReadFrom(bytes.NewReader(nil)); n != 0 || err != nil {
+		t.Fatalf("empty source = %d, %v", n, err)
+	}
+	// Exactly what fits: success, not ErrShortBuffer.
+	if n, err := b.ReadFrom(onlyReader{bytes.NewReader([]byte("ABCDEFG"))}); n != 7 || err != nil || !b.IsFull() {
+		t.Fatalf("exact fit = %d, %v, full %v", n, err, b.IsFull())
+	}
+	// Full already, source empty: still success.
+	if n, err := b.ReadFrom(bytes.NewReader(nil)); n != 0 || err != nil {
+		t.Fatalf("full buffer, empty source = %d, %v", n, err)
+	}
+	// Full already, source has data.
+	if n, err := b.ReadFrom(bytes.NewReader([]byte("x"))); n != 0 || err != io.ErrShortBuffer {
+		t.Fatalf("full buffer, more data = %d, %v", n, err)
+	}
+
+	b.Truncate(2)
+	if n, err := b.ReadFrom(bytes.NewReader(bytes.Repeat([]byte("z"), 40))); n != 14 || err != io.ErrShortBuffer || !b.IsFull() || string(b.From(2)) != "zzzzzzzzzzzzzz" {
+		t.Fatalf("more than fits = %d, %v, %q", n, err, b.Bytes())
+	}
+
+	b.Truncate(2)
+	boom := errors.New("boom")
+	if n, err := b.ReadFrom(&chunkReader{data: []byte("123"), step: 2, err: boom}); n != 3 || err != boom || string(b.Bytes()) != "ab123" {
+		t.Fatalf("source error = %d, %v, %q", n, err, b.Bytes())
+	}
+
+	b.Truncate(2)
+	for _, bad := range []int{-1, 15, math.MaxInt} { // 14 free
+		if n, err := b.ReadFrom(badReader{bad}); n != 0 || !errors.Is(err, ErrInvalidCount) || string(b.Bytes()) != "ab" {
+			t.Fatalf("count %d = %d, %v, %q", bad, n, err, b.Bytes())
+		}
+	}
+	stall := &stallReader{}
+	if n, err := b.ReadFrom(stall); n != 0 || err != io.ErrNoProgress || stall.calls > 200 {
+		t.Fatalf("stalled source = %d, %v after %d reads", n, err, stall.calls)
+	}
+	if n, err := b.ReadFrom(&stallAfter{data: []byte("123")}); n != 3 || err != io.ErrNoProgress || string(b.Bytes()) != "ab123" {
+		t.Fatalf("data then stall = %d, %v, %q", n, err, b.Bytes())
+	}
+	b.Resize(0, 16) // full: the probe for more data must not spin either
+	if n, err := b.ReadFrom(&stallReader{}); n != 0 || err != io.ErrNoProgress {
+		t.Fatalf("full buffer, stalled source = %d, %v", n, err)
+	}
+	if n, err := b.ReadFrom(badReader{2}); n != 0 || !errors.Is(err, ErrInvalidCount) { // 2 into a 1-byte probe
+		t.Fatalf("full buffer, bad count = %d, %v", n, err)
+	}
+
+	// Reading into a buffer with room allocates nothing.
+	src := bytes.NewReader([]byte("0123456789"))
+	if allocs := testing.AllocsPerRun(100, func() {
+		b.Reset()
+		src.Seek(0, io.SeekStart)
+		b.ReadFrom(src)
+	}); allocs != 0 {
+		t.Fatalf("ReadFrom allocates %v times per call", allocs)
+	}
+
+	// io.Copy into a *Buf: exact fit succeeds, overflow is ErrShortBuffer.
+	b.Reset()
+	if n, err := io.Copy(b, onlyReader{bytes.NewReader(bytes.Repeat([]byte("k"), 16))}); n != 16 || err != nil || !b.IsFull() {
+		t.Fatalf("io.Copy exact fit = %d, %v", n, err)
+	}
+	b.Reset()
+	if n, err := io.Copy(b, onlyReader{bytes.NewReader(bytes.Repeat([]byte("k"), 17))}); n != 16 || err != io.ErrShortBuffer {
+		t.Fatalf("io.Copy overflow = %d, %v", n, err)
+	}
+}
