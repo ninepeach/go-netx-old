@@ -360,6 +360,8 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | BUF-24 | P0 | `Advance(math.MaxInt)` 只丢弃 `Len` 字节，游标不溢出成负数，之后仍可 `ExtendHeader` | ✅ | `buf.AdvanceHugeDoesNotOverflow` | REG-35 |
 | BUF-25 | P0 | 来源或目标报告越界计数（负数、超过给定空间）时，`ReadOnceFrom`/`ReadPacketFrom`/`WriteTo` 返回 `ErrInvalidCount` 且不改变缓冲区；`WriteTo` 少写且无错误时返回 `io.ErrShortWrite`，不消费数据 | ✅ | `buf.InvalidIOCounts` | REG-36 |
 | BUF-26 | P1 | `New`/`NewPacket` 从 `Default` 取空 buffer，容量分别为 `BufferSize`（32KB）和 `UDPBufferSize`（16KB），都在池化档位内 | ✅ | `buf.DefaultSizes` | D-27 |
+| BUF-27 | P1 | 消费型读取：`Read`（`io.Reader`，空时 `io.EOF`，空切片返回 0、nil）、`ReadByte`、`ReadBytes`（返回视图而非副本，容量不超出自身；不足 n 字节时不消费，空返回 `io.EOF`、不足返回 `io.ErrUnexpectedEOF`；负数 panic）只移动起始游标、不搬动数据，消费掉的字节变回头部空间；`io.Copy` 走 `WriteTo`，不消费（与 sing 一致） | ✅ | `buf.ConsumingReads` | D-29 |
+| BUF-28 | P1 | 按位置访问：`Byte`、`SetByte`、`To`、`From`、`Range` 的位置相对起始游标；超出 0..Len 一律 panic（头部空间、空闲空间都够不到）；返回的是视图且容量不超出自身 | ✅ | `buf.IndexedAccess` | D-29 |
 | REG-37 | buf | 超过 64KB 的非池化 buffer 在 Release 后仍引用底层内存（实测 65537 字节）：调用方若在结构体里留着这个 `*Buf`，整块内存无法回收（外部审查发现） |  | ✅ |
 
 ## 8.5 stream：流式读写

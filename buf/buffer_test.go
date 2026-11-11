@@ -273,3 +273,130 @@ func TestInvalidIOCounts(t *testing.T) {
 		t.Fatalf("WriteTo consumed data: %q", b.Bytes())
 	}
 }
+
+// Read, ReadByte and ReadBytes consume from the front by moving the start
+// cursor, never the memory: the consumed bytes become headroom. Read is an
+// io.Reader (io.EOF when empty, 0 and nil for an empty p); ReadByte an
+// io.ByteReader; ReadBytes returns a view of the next n bytes, valid until
+// the buffer changes, or consumes nothing and returns io.EOF (empty) or
+// io.ErrUnexpectedEOF (fewer than n).
+//
+// Checks: BUF-27
+func TestConsumingReads(t *testing.T) {
+	var _ io.Reader = (*Buf)(nil)
+	var _ io.ByteReader = (*Buf)(nil)
+	b := GetHeadroom(4, 32)
+	defer b.Release()
+	b.WriteString("hello world!")
+	orig := b.Bytes() // to check that reads move the cursor, not the bytes
+
+	p := make([]byte, 5)
+	if n, err := b.Read(p); n != 5 || err != nil || string(p) != "hello" {
+		t.Fatalf("Read = %d, %v, %q", n, err, p)
+	}
+	if b.Start() != 9 || string(b.Bytes()) != " world!" || &b.Bytes()[0] != &orig[5] {
+		t.Fatalf("after Read: start %d data %q; the data must not move", b.Start(), b.Bytes())
+	}
+	if n, err := b.Read(nil); n != 0 || err != nil {
+		t.Fatalf("Read(nil) = %d, %v", n, err)
+	}
+	if c, err := b.ReadByte(); c != ' ' || err != nil {
+		t.Fatalf("ReadByte = %q, %v", c, err)
+	}
+	view, err := b.ReadBytes(5)
+	if err != nil || string(view) != "world" || &view[0] != &orig[6] {
+		t.Fatalf("ReadBytes = %q, %v; want a view of the buffer", view, err)
+	}
+	if cap(view) != 5 {
+		t.Fatalf("ReadBytes view has cap %d: appending to it would overwrite the buffer", cap(view))
+	}
+	if v, err := b.ReadBytes(0); len(v) != 0 || err != nil {
+		t.Fatalf("ReadBytes(0) = %q, %v", v, err)
+	}
+	// One byte left: asking for two consumes nothing.
+	if v, err := b.ReadBytes(2); v != nil || err != io.ErrUnexpectedEOF || b.Len() != 1 {
+		t.Fatalf("short ReadBytes = %q, %v, Len %d", v, err, b.Len())
+	}
+	big := make([]byte, 10)
+	if n, err := b.Read(big); n != 1 || err != nil || big[0] != '!' {
+		t.Fatalf("last Read = %d, %v", n, err)
+	}
+	if n, err := b.Read(big); n != 0 || err != io.EOF {
+		t.Fatalf("Read when empty = %d, %v", n, err)
+	}
+	if _, err := b.ReadByte(); err != io.EOF {
+		t.Fatalf("ReadByte when empty = %v", err)
+	}
+	if _, err := b.ReadBytes(1); err != io.EOF {
+		t.Fatalf("ReadBytes when empty = %v", err)
+	}
+	mustPanic(t, "ReadBytes(-1)", func() { b.ReadBytes(-1) })
+
+	// The consumed bytes are headroom again.
+	if b.Start() != 16 {
+		t.Fatalf("start %d after consuming 12 bytes from 4", b.Start())
+	}
+	copy(b.ExtendHeader(2), "ok")
+	if string(b.Bytes()) != "ok" {
+		t.Fatalf("ExtendHeader after reads = %q", b.Bytes())
+	}
+
+	// io.Copy takes WriteTo, which leaves the data (as in sing); Read is
+	// the consuming path.
+	var out bytes.Buffer
+	if n, err := io.Copy(&out, b); n != 2 || err != nil || b.Len() != 2 {
+		t.Fatalf("io.Copy = %d, %v, Len after %d; WriteTo must not consume", n, err, b.Len())
+	}
+}
+
+// Byte, SetByte, From, To and Range index the data, not the memory under
+// it: positions are relative to the start cursor and anything outside
+// 0..Len panics, including the headroom and the free space. The slices are
+// views whose capacity ends where they do.
+//
+// Checks: BUF-28
+func TestIndexedAccess(t *testing.T) {
+	b := GetHeadroom(8, 32)
+	defer b.Release()
+	b.WriteString("0123456789")
+	if b.Byte(0) != '0' || b.Byte(9) != '9' {
+		t.Fatalf("Byte = %q, %q", b.Byte(0), b.Byte(9))
+	}
+	b.SetByte(3, 'x')
+	if string(b.Bytes()) != "012x456789" {
+		t.Fatalf("after SetByte: %q", b.Bytes())
+	}
+	if string(b.To(3)) != "012" || string(b.From(7)) != "789" || string(b.Range(3, 6)) != "x45" {
+		t.Fatalf("To %q From %q Range %q", b.To(3), b.From(7), b.Range(3, 6))
+	}
+	if len(b.To(0)) != 0 || len(b.From(10)) != 0 || len(b.Range(4, 4)) != 0 {
+		t.Fatal("empty views at the edges")
+	}
+	for name, v := range map[string][]byte{"To": b.To(3), "From": b.From(7), "Range": b.Range(3, 6)} {
+		if cap(v) != len(v) {
+			t.Fatalf("%s view: len %d cap %d", name, len(v), cap(v))
+		}
+	}
+	b.Range(3, 6)[0] = '3' // a view, not a copy
+	if b.Byte(3) != '3' {
+		t.Fatal("Range returned a copy")
+	}
+	b.Advance(2) // positions follow the start cursor
+	if b.Byte(0) != '2' || string(b.To(2)) != "23" {
+		t.Fatalf("after Advance: Byte(0) %q To(2) %q", b.Byte(0), b.To(2))
+	}
+	for name, fn := range map[string]func(){
+		"Byte(-1)":       func() { b.Byte(-1) },
+		"Byte(Len)":      func() { b.Byte(b.Len()) },
+		"SetByte(Len)":   func() { b.SetByte(b.Len(), 0) },
+		"To(Len+1)":      func() { b.To(b.Len() + 1) },
+		"To(-1)":         func() { b.To(-1) },
+		"From(Len+1)":    func() { b.From(b.Len() + 1) },
+		"From(-1)":       func() { b.From(-1) },
+		"Range(5,4)":     func() { b.Range(5, 4) },
+		"Range(-1,2)":    func() { b.Range(-1, 2) },
+		"Range(0,Len+1)": func() { b.Range(0, b.Len()+1) },
+	} {
+		mustPanic(t, name, fn)
+	}
+}

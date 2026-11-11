@@ -206,6 +206,93 @@ func (b *Buf) WriteByte(c byte) error {
 	return nil
 }
 
+// Read copies data into p and consumes what it copied, like io.Reader: it
+// returns io.EOF when the buffer is empty. Consuming moves the start
+// cursor (the bytes become headroom); nothing is copied within the buffer.
+// WriteTo, which io.Copy prefers, does not consume.
+func (b *Buf) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if b.IsEmpty() {
+		return 0, io.EOF
+	}
+	n := copy(p, b.data[b.start:b.end])
+	b.start += n
+	return n, nil
+}
+
+// ReadByte consumes and returns the first byte, or returns io.EOF.
+func (b *Buf) ReadByte() (byte, error) {
+	if b.IsEmpty() {
+		return 0, io.EOF
+	}
+	c := b.data[b.start]
+	b.start++
+	return c, nil
+}
+
+// ReadBytes consumes the first n bytes and returns them as a view of the
+// buffer, not a copy: valid until the buffer is written to, reset or
+// released. With fewer than n bytes it consumes nothing and returns io.EOF
+// if the buffer is empty, io.ErrUnexpectedEOF otherwise. It panics if n is
+// negative.
+func (b *Buf) ReadBytes(n int) ([]byte, error) {
+	if n < 0 {
+		panic("buf: ReadBytes(" + strconv.Itoa(n) + ")")
+	}
+	if n > b.Len() {
+		if b.IsEmpty() {
+			return nil, io.EOF
+		}
+		return nil, io.ErrUnexpectedEOF
+	}
+	v := b.data[b.start : b.start+n : b.start+n]
+	b.start += n
+	return v, nil
+}
+
+// Byte returns the data byte at position i. It panics unless 0 <= i < Len.
+func (b *Buf) Byte(i int) byte {
+	b.checkIndex("Byte", i, b.Len()-1)
+	return b.data[b.start+i]
+}
+
+// SetByte sets the data byte at position i. It panics unless 0 <= i < Len.
+func (b *Buf) SetByte(i int, c byte) {
+	b.checkIndex("SetByte", i, b.Len()-1)
+	b.data[b.start+i] = c
+}
+
+// To returns the first n bytes of the data. Like From and Range it returns
+// a view, with no capacity beyond its length, and panics outside 0..Len.
+func (b *Buf) To(n int) []byte {
+	b.checkIndex("To", n, b.Len())
+	return b.data[b.start : b.start+n : b.start+n]
+}
+
+// From returns the data from position i to its end.
+func (b *Buf) From(i int) []byte {
+	b.checkIndex("From", i, b.Len())
+	return b.data[b.start+i : b.end : b.end]
+}
+
+// Range returns the data from position i up to, not including, position j.
+func (b *Buf) Range(i, j int) []byte {
+	b.checkIndex("Range", j, b.Len())
+	b.checkIndex("Range", i, j)
+	return b.data[b.start+i : b.start+j : b.start+j]
+}
+
+// checkIndex panics unless 0 <= i <= max. Positions are checked against the
+// data, not the memory under it, so a wrong offset cannot reach the
+// headroom, the free space or a neighbour's bytes left in the class.
+func (b *Buf) checkIndex(op string, i, max int) {
+	if i < 0 || i > max {
+		panic("buf: " + op + " position " + strconv.Itoa(i) + " outside 0.." + strconv.Itoa(max))
+	}
+}
+
 // ReadOnceFrom reads once from r into the free space and appends what it
 // read. It returns io.ErrShortBuffer, without reading, if the buffer is
 // full, and ErrInvalidCount, appending nothing, if r reports a count
