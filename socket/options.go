@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -50,6 +51,35 @@ type Options struct {
 	// to every accepted connection; on a Dialer to every dialed one. The
 	// zero value keeps Go's default (enabled, 15s).
 	KeepAlive KeepAlive
+	// Interface, when not empty, binds the socket to the named network
+	// interface: its traffic leaves through that interface whatever the
+	// routing table says (multi-homed hosts, keeping a proxy's own traffic
+	// off a VPN). Linux uses SO_BINDTODEVICE, which also restricts what the
+	// socket receives; macOS IP_BOUND_IF / IPV6_BOUND_IF; Windows
+	// IP_UNICAST_IF / IPV6_UNICAST_IF, which affect only outgoing unicast
+	// traffic. An unknown name fails the dial or listen. Other platforms
+	// return an UnsupportedOptionError.
+	Interface string
+	// RoutingMark, when not zero, sets SO_MARK (Linux only), which policy
+	// routing and netfilter rules can match, for example to keep a
+	// transparent proxy's own connections out of its redirect rules. It
+	// needs CAP_NET_ADMIN; without it the socket is not created (EPERM).
+	// Other platforms return an UnsupportedOptionError.
+	RoutingMark uint32
+	// DontFragment sets the IP don't-fragment bit on UDP sockets, so a
+	// datagram larger than the path MTU fails to send (EMSGSIZE) instead of
+	// being fragmented: path MTU discovery for QUIC and media. On an IPv6
+	// socket it covers IPv4-mapped traffic too where the platform allows
+	// (Linux, Windows). It is refused on TCP, and returns an
+	// UnsupportedOptionError on platforms without it.
+	DontFragment bool
+	// BindAddressNoPort, on a dialer with a LocalAddr whose port is 0,
+	// defers choosing the local port from bind to connect (Linux
+	// IP_BIND_ADDRESS_NO_PORT), so many outbound TCP connections from one
+	// source address do not run out of ports. A performance option: other
+	// platforms dial without it (Supported().BindAddressNoPort). It is
+	// refused on listeners and on UDP.
+	BindAddressNoPort bool
 }
 
 // KeepAlive configures TCP keep-alive probes, which let a server notice a
@@ -218,14 +248,27 @@ func control(opts Options, outbound bool) func(string, string, syscall.RawConn) 
 			if err := CheckDialer(opts); err != nil {
 				return err
 			}
+		} else if opts.BindAddressNoPort {
+			return &UnsupportedOptionError{Option: "BindAddressNoPort", Platform: "listeners"}
 		}
 		if opts == (Options{}) {
 			return nil
 		}
+		ipv6 := strings.HasSuffix(network, "6")
+		var ifindex int
+		if opts.Interface != "" && interfaceByIndex {
+			ifi, err := net.InterfaceByName(opts.Interface)
+			if err != nil {
+				return fmt.Errorf("socket: interface %q: %w", opts.Interface, err)
+			}
+			ifindex = ifi.Index
+		}
 		var applyErr error
 		if err := raw.Control(func(fd uintptr) {
 			if applyErr = applyBuffers(fd, opts); applyErr == nil {
-				applyErr = applyOptions(fd, opts)
+				if applyErr = applyOptions(fd, opts); applyErr == nil {
+					applyErr = applyControl(fd, opts, ipv6, ifindex)
+				}
 			}
 		}); err != nil {
 			return err
@@ -251,6 +294,10 @@ func checkNetwork(network string, o Options) error {
 		return &UnsupportedOptionError{Option: "TCP Fast Open", Platform: where}
 	case isUDP && !o.KeepAlive.IsZero():
 		return &UnsupportedOptionError{Option: "TCP keep-alive", Platform: where}
+	case isUDP && o.BindAddressNoPort:
+		return &UnsupportedOptionError{Option: "BindAddressNoPort", Platform: where}
+	case isTCP && o.DontFragment:
+		return &UnsupportedOptionError{Option: "DontFragment", Platform: where}
 	}
 	return nil
 }
