@@ -43,7 +43,7 @@ func TestFastOpenConfigurationRunsEverywhere(t *testing.T) {
 // Checks: SOCK-27
 func TestSupportedMatchesPlatform(t *testing.T) {
 	want := map[string]socket.Capabilities{
-		"linux":   {FastOpenListen: true, ReusePortBalanced: true},
+		"linux":   {FastOpenListen: true, ReusePortBalanced: true, BindAddressNoPort: true},
 		"darwin":  {FastOpenListen: true},
 		"freebsd": {ReusePortBalanced: true},
 	}[runtime.GOOS]

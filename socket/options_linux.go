@@ -4,7 +4,7 @@ package socket
 
 import "syscall"
 
-var platformCapabilities = Capabilities{FastOpenListen: true, ReusePortBalanced: true}
+var platformCapabilities = Capabilities{FastOpenListen: true, ReusePortBalanced: true, BindAddressNoPort: true}
 
 const (
 	tcpFastOpen = 23

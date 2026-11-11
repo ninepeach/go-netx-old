@@ -105,6 +105,10 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | SOCK-29 | P0 | `socket.Dialer` 保留调用方的 `Control` 和 `ControlContext`，先执行调用方的，再应用 go-netx 的选项；base 设置了 `ControlContext` 时选项照样生效 | ✅ | `socket.DialerKeepsCallerControl` |  |
 | SOCK-30 | P1 | `SetBuffers` 收到 nil 或 typed nil 连接时返回错误，不 panic，也不假装成功 | ✅ | `socket.SetBuffersRejectsNil` |  |
 | SOCK-31 | P1 | `socket.CheckDialer` 不拨号就返回与拨号时相同的 `UnsupportedOptionError`（FastOpen 开启时）；其他选项返回 nil | ✅ | `socket.CheckDialer` |  |
+| SOCK-32 | P1 | `Interface`：经回环接口拨号回环地址成功（Linux、macOS、Windows）；不存在的接口名让拨号和监听失败；其他平台返回 `UnsupportedOptionError`；各平台用 getsockopt 读回（Linux `SO_BINDTOIFINDEX`，macOS `IP_BOUND_IF`/`IPV6_BOUND_IF`，Windows `IP_UNICAST_IF` 设置用网络字节序、读回为主机字节序，双栈两项都设） | ✅ | `socket.InterfaceBindingReadBackDarwin`<br>`socket.InterfaceBindingReadBackLinux`<br>`socket.InterfaceBindingReadBackWindows`<br>`socket.InterfaceBinding` | D-28 |
+| SOCK-33 | P1 | `RoutingMark`：Linux 有 CAP_NET_ADMIN 时读回 `SO_MARK`，没有时拨号以 EPERM 失败而不是不打标记；其他平台返回 `UnsupportedOptionError` | ✅ | `socket.RoutingMarkReadBackLinux`<br>`socket.RoutingMark` | D-28 |
+| SOCK-34 | P1 | `DontFragment`：TCP 上是配置错误；UDP 上 IPv4、IPv6、双栈套接字读回（Linux 双栈两项都设，macOS 按族，Windows 双栈两项都设） | ✅ | `socket.DontFragmentNetworks`<br>`socket.DontFragmentReadBackDarwin`<br>`socket.DontFragmentReadBackLinux`<br>`socket.DontFragmentReadBackWindows` | D-28 |
+| SOCK-35 | P1 | `BindAddressNoPort`：带 LocalAddr 的拨号在所有平台成功；Linux 读回 `IP_BIND_ADDRESS_NO_PORT`，`Supported().BindAddressNoPort` 仅 Linux 为 true；监听器和 UDP 上是配置错误 | ✅ | `socket.BindAddressNoPortReadBackLinux`<br>`socket.BindAddressNoPort` | D-28 |
 
 ## 3. tcp：TCP 传输
 
@@ -360,6 +364,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | BUF-24 | P0 | `Advance(math.MaxInt)` 只丢弃 `Len` 字节，游标不溢出成负数，之后仍可 `ExtendHeader` | ✅ | `buf.AdvanceHugeDoesNotOverflow` | REG-35 |
 | BUF-25 | P0 | 来源或目标报告越界计数（负数、超过给定空间）时，`ReadOnceFrom`/`ReadPacketFrom`/`WriteTo` 返回 `ErrInvalidCount` 且不改变缓冲区；`WriteTo` 少写且无错误时返回 `io.ErrShortWrite`，不消费数据 | ✅ | `buf.InvalidIOCounts` | REG-36 |
 | BUF-26 | P1 | `New`/`NewPacket` 从 `Default` 取空 buffer，容量分别为 `BufferSize`（32KB）和 `UDPBufferSize`（16KB），都在池化档位内 | ✅ | `buf.DefaultSizes` | D-27 |
+| D-28 |  | sing 是 GPL-3.0-or-later，复制或改编会让 go-netx 的分发受 GPL 约束；这些都是操作系统 socket 选项，按各系统文档实现即可。前三个改变行为，不支持就报错；`BindAddressNoPort` 只省端口，不支持就照常拨号（D-18） |
 | REG-37 | buf | 超过 64KB 的非池化 buffer 在 Release 后仍引用底层内存（实测 65537 字节）：调用方若在结构体里留着这个 `*Buf`，整块内存无法回收（外部审查发现） |  | ✅ |
 
 ## 8.5 stream：流式读写

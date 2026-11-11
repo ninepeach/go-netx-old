@@ -13,6 +13,9 @@ type Capabilities struct {
 	// ReusePortBalanced: ReusePort spreads connections and datagrams
 	// across the sockets. macOS binds but does not spread.
 	ReusePortBalanced bool
+	// BindAddressNoPort: Options.BindAddressNoPort defers the local port
+	// to connect (Linux).
+	BindAddressNoPort bool
 }
 
 // Supported returns the current platform's Capabilities.

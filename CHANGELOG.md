@@ -12,6 +12,10 @@
   trailers without copying the payload. `As`/`With` wrap memory buf does
   not own. `buf.Default` with package-level `Get`, `GetHeadroom` and
   `Copy`. Get + Release still allocates nothing.
+- socket: `Options.Interface` (bind to a named interface: Linux, macOS,
+  Windows), `RoutingMark` (Linux `SO_MARK`), `DontFragment` (UDP) and
+  `BindAddressNoPort` (Linux dialers), with `Supported().BindAddressNoPort`
+  (D-28). Implemented from the platforms' documentation, not from sing.
 - tcp: `Conn.CloseWrite`, `CloseRead`, `ReadFrom` and `WriteTo` forward to
   the embedded connection. A proxy can half-close an accepted connection,
   and `io.Copy` through a `*tcp.Conn` reaches the standard library's TCP
