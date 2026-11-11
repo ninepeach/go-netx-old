@@ -122,7 +122,8 @@ fails the dial or listen with the lookup error. On an IPv6 socket the IPv6
 option is set; Linux and Windows apply IPv4-level options to IPv4-mapped
 traffic on a dual-stack socket, so there both are set, while macOS and
 FreeBSD refuse IPv4 options on an IPv6 socket and get only the IPv6 one.
-Windows' `IP_UNICAST_IF` takes the index in network byte order and, unlike
+Windows' `IP_UNICAST_IF` takes the index in network byte order (getsockopt
+returns it in host order) and, unlike
 `SO_BINDTODEVICE`, only steers outgoing unicast traffic. `DontFragment` is
 UDP-only (TCP does path MTU discovery itself) and `BindAddressNoPort`
 dialer- and TCP-only; elsewhere they are configuration errors.

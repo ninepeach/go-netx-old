@@ -4,7 +4,6 @@ package socket_test
 
 import (
 	"context"
-	"encoding/binary"
 	"net"
 	"syscall"
 	"testing"
@@ -40,7 +39,10 @@ func listenUDPWindows(t *testing.T, opts socket.Options, network, addr string) *
 	return pc.(*net.UDPConn)
 }
 
-// IP_UNICAST_IF holds the index in network byte order.
+// setsockopt(IP_UNICAST_IF) takes the index in network byte order;
+// getsockopt returns it in host order (CI, Windows Server 2025), so reading
+// back the plain index shows the kernel took the right interface rather
+// than index 16777216.
 //
 // Checks: SOCK-32
 func TestInterfaceBindingReadBackWindows(t *testing.T) {
@@ -48,19 +50,16 @@ func TestInterfaceBindingReadBackWindows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var be [4]byte
-	binary.BigEndian.PutUint32(be[:], uint32(lo.Index))
-	want4 := int(binary.NativeEndian.Uint32(be[:]))
 	v4 := listenUDPWindows(t, socket.Options{Interface: lo.Name}, "udp4", "127.0.0.1:0")
-	if got := winIntOption(t, v4, syscall.IPPROTO_IP, 31); got != want4 {
-		t.Fatalf("IP_UNICAST_IF = %#x, want %#x", got, want4)
+	if got := winIntOption(t, v4, syscall.IPPROTO_IP, 31); got != lo.Index {
+		t.Fatalf("IP_UNICAST_IF = %#x, want %#x", got, lo.Index)
 	}
 	v6 := listenUDPWindows(t, socket.Options{Interface: lo.Name}, "udp", ":0")
 	if got := winIntOption(t, v6, syscall.IPPROTO_IPV6, 31); got != lo.Index {
 		t.Fatalf("IPV6_UNICAST_IF = %d, want %d", got, lo.Index)
 	}
-	if got := winIntOption(t, v6, syscall.IPPROTO_IP, 31); got != want4 {
-		t.Fatalf("dual-stack IP_UNICAST_IF = %#x, want %#x", got, want4)
+	if got := winIntOption(t, v6, syscall.IPPROTO_IP, 31); got != lo.Index {
+		t.Fatalf("dual-stack IP_UNICAST_IF = %#x, want %#x", got, lo.Index)
 	}
 }
 
