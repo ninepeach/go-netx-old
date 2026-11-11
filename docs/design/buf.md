@@ -249,3 +249,33 @@ operation) in [docs/TESTING.md](../TESTING.md).
 ## 9. Open items
 
 None.
+
+## V1 stabilization addendum — bounded pool contract (design target, not implemented)
+
+This section supersedes D-24's blanket exclusion of memory limits **only for an explicitly configured bounded Pool**. The existing unbounded `NewPool` / `Default` fast path and its API remain unchanged. No process RSS or Go heap bound is promised.
+
+### Proposed API and compatibility gate
+
+```go
+type PoolOptions struct { MaxBytes int64 } // 0: unlimited; negative: invalid
+func NewPoolWithOptions(PoolOptions) (*Pool, error)
+func (p *Pool) Acquire(size int) (*Buf, error)
+func (p *Pool) AcquireHeadroom(head, size int) (*Buf, error)
+var ErrPoolExhausted error
+```
+
+The signatures above are **design targets**; freeze them against the current callers before implementation. The bounded pool must not expose a successful allocation through `Get`, `GetHeadroom`, or `Copy` that bypasses its budget. Preferred contract: these legacy methods panic with a clear programmer-error message on a bounded pool, and only `Acquire*` is supported; the unbounded pool keeps the original no-error methods. An application that needs bounded copying acquires then copies, releasing on failure. Package-level functions remain unbounded. Do not silently allocate outside the budget or turn exhaustion into a panic inside `Acquire`.
+
+### Accounting and allocation
+
+- `ReservedBytes = InUseBytes + CachedBytes <= MaxBytes` is invariant under concurrency. Count **physical backing allocation capacity** (size-class capacity, not logical `Buf.Cap()`); for requests >64KiB count actual allocated length. The metadata object, allocator overhead, stack, external slices, and GC-retained freed memory are outside this accounting.
+- A free buffer remains reserved while cached. Reuse of a sufficiently large class does not increase reserved bytes; a new allocation atomically reserves its full class capacity *before* allocating. If allocation fails/panics, the reservation must be rolled back where recoverable. A returned buffer carries its pool identity and charged capacity.
+- When the limit cannot fit a new allocation, first evict cached buffers, releasing their reservations, then retry once. If still impossible, return `ErrPoolExhausted` without changing caller ownership. Never block waiting for another owner, borrow from a different pool, or bypass the limit. A request whose physical capacity exceeds the limit fails immediately.
+- Bounded pools use explicitly synchronized free lists, **not** `sync.Pool`, whose GC eviction cannot provide exact accounting. Unlimited pools retain the existing per-class `sync.Pool` implementation. Avoid one global mutex in the unbounded hot path.
+- Release transitions in-use to cached for eligible classes or decrements reserved for uncached >64KiB buffers. A pool may evict cached entries under budget pressure. Never cache unmanaged `As`/`With` memory. Release clears references to large allocations. A single owner calls Release exactly once; double release is misuse and must be detectable in `netxdebug`.
+- `Get(0)`, `Acquire(0)`, headroom-only, negative values, and `head+size` overflow must have explicit tests. Zero-sized acquisitions must not accidentally reserve a class without accounting for it.
+- Pool statistics (if exposed) are **snapshots**, not synchronization barriers; at minimum test internal accounting invariants after concurrent activity. Avoid exposing a new stats API until a concrete consumer needs it.
+
+### Acceptance
+
+Retain existing API tests and benchmark baselines for unlimited mode. Add bounded exhaustion, cache eviction, cross-pool release, >64KiB, budget restoration, race, cancellation-free failure, and `netxdebug` ownership tests. Benchmarks must report ns/op, B/op, allocs/op for both modes and document any regression. No new background goroutine or third-party dependency.
