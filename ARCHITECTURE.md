@@ -205,3 +205,23 @@ working rules in [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md). A design
 change is made here, in the same pull request as the code. Copies
 elsewhere, such as the claude.ai Project or older design archives, are
 not authoritative.
+
+## V1 five-module stabilization plan (design-only, pending implementation)
+
+This section records the **target** and does not imply that the current implementation or frozen package layout has already changed. Review and implement sequentially, stopping for manual acceptance after each stage:
+
+| Step | Current package | Design target | Reference |
+|---|---|---|---|
+| 1 | `buf` | Optional strictly bounded pool; unbounded fast path unchanged | [buf.md](docs/design/buf.md) |
+| 2 | `stream` | Evaluate consolidation/rename to **one** `bufio` implementation | [stream.md](docs/design/stream.md), [bufio.md](docs/design/bufio.md) |
+| 3 | `socket` | Correct socket option and platform behavior | [socket.md](docs/design/socket.md) |
+| 4 | `tcp` | Admission, net.Conn compatibility, graceful lifecycle | [tcp.md](docs/design/tcp.md) |
+| 5 | `udp` | Datagram integrity, batch receive, borrowed packet lifetime | [udp.md](docs/design/udp.md) |
+
+**Current dependency graph remains authoritative until Step 2 is implemented:** `stream -> buf`. The proposed graph afterwards is `bufio -> buf`, while `tcp -> socket, limit, internal` and `udp -> socket, internal` remain unchanged. Transports do not import `buf` or `bufio`; the application composes them. The proposed rename is an intentional change to the freeze rules and requires explicit migration acceptance, not a silent second implementation.
+
+The earlier D-24 statement excluding limits from `buf` is superseded **only for opt-in bounded pools**; `Default` and `NewPool()` remain unlimited. Exact physical allocation accounting is a pool-reservation contract, **not** a guarantee about RSS or the Go runtime heap.
+
+**Cross-platform acceptance:** Linux and macOS runtime/race tests, Windows compile checks; FreeBSD is not a supported V1 target even where older docs describe code paths. The existing package design files and `docs/TESTING.md` remain the baseline; add new test IDs when implementation begins. Sing serves as a conceptual/API comparison, not a source-code transplant.
+
+**Review gate:** design -> audit/fix implementation -> unit/boundary/race/benchmark -> manual acceptance. No automatic progression, no unrelated features, no protocol semantics, no per-packet goroutines or queues, and no new third-party dependencies. These documents alone do not authorize coding.
