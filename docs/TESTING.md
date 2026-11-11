@@ -153,6 +153,7 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | TCP-30 | P0 | `Serve` 被调用之前已经 `Shutdown`：第一次 `Serve` 返回 nil、不接受连接，第二次返回 `ErrClosed`；监听已关闭；之后的 `Shutdown` 立即返回 nil | ✅ | `tcp.ServeAfterShutdownBeforeServe` | 调用顺序由测试固定，不依赖调度；REG-34 |
 | TCP-31 | P1 | `Serve` 之前 `Close`（中止）：`Serve` 仍返回 `ErrClosed`，重复调用也是；只有优雅的 `Shutdown` 算作已请求的停止 | ✅ | `tcp.ServeAfterCloseBeforeServeIsErrClosed` |  |
 | TCP-32 | P0 | 已接受的 `*tcp.Conn` 半关闭：客户端发完请求 `CloseWrite`，handler 读到 EOF 后回复并 `CloseWrite`，客户端读到完整回复和 EOF，连接未完全关闭；另一条连接上 `CloseRead` 之后 `Read` 立即返回、无数据、带错误（Unix 为 EOF，Windows 为 WSAESHUTDOWN），客户端仍可发送 | ✅ | `tcp.ConnHalfClose` | REG-38 |
+| REG-39 | buf | `ReadFullFrom` 走标准库 `io.ReadFull`，不检查来源返回的计数：来源在 4 字节空间里声称读了 15 字节时，16 字节的 buffer `Len` 变成 17、`FreeLen` 变成 -1（实测）；来源一直返回 (0, nil) 时永远空转（实测 2 秒后仍未返回）。REG-36 修了 `ReadOnceFrom`/`ReadPacketFrom`，漏了这条路径 |  | ✅ |
 | TCP-33 | P0 | `io.Copy` 经过 `*tcp.Conn` 双向转发（`*tcp.Conn`↔`*tcp.Conn`、`*tcp.Conn`↔`*net.TCPConn`）：每个方向 1MB 完整送达，各自的半关闭传到对端，两个 Copy 都在不完全关闭的情况下结束；`*tcp.Conn` 实现 `io.ReaderFrom`、`io.WriterTo`、`CloseWrite`、`CloseRead` | ✅ | `tcp.ConnRelayWithIOCopy` | Linux 上走 splice 由 strace 实测（见 design/tcp.md）；REG-38 |
 | TCP-34 | P1 | 底层不是 TCP（`NewServer` 配自定义 listener，这里是包装过的 `net.Pipe`）：`CloseWrite`/`CloseRead` 返回 `errors.ErrUnsupported` 且不关闭任何东西；`ReadFrom`/`WriteTo` 经过包装器自己的 `Read`/`Write`，包装器看到全部字节，数据完整 | ✅ | `tcp.ConnNonTCPUnderlying` |  |
 | TCP-35 | P0 | 两个方向独立半关闭，且半关闭不是关闭：`CloseWrite` 后 handler 仍收到客户端随后发来的数据；`CloseRead` 后仍可写，客户端收到；期间 `Stats().Active` 仍为 1，handler 继续运行 | ✅ | `tcp.ConnHalfCloseKeepsOtherDirection` |  |
@@ -365,6 +366,13 @@ go run ./internal/tools/testdoc      # 只检查，不修改
 | BUF-25 | P0 | 来源或目标报告越界计数（负数、超过给定空间）时，`ReadOnceFrom`/`ReadPacketFrom`/`WriteTo` 返回 `ErrInvalidCount` 且不改变缓冲区；`WriteTo` 少写且无错误时返回 `io.ErrShortWrite`，不消费数据 | ✅ | `buf.InvalidIOCounts` | REG-36 |
 | BUF-26 | P1 | `New`/`NewPacket` 从 `Default` 取空 buffer，容量分别为 `BufferSize`（32KB）和 `UDPBufferSize`（16KB），都在池化档位内 | ✅ | `buf.DefaultSizes` | D-27 |
 | D-28 |  | sing 是 GPL-3.0-or-later，复制或改编会让 go-netx 的分发受 GPL 约束；这些都是操作系统 socket 选项，按各系统文档实现即可。前三个改变行为，不支持就报错；`BindAddressNoPort` 只省端口，不支持就照常拨号（D-18） |
+| D-29 |  | 目标是 sing 写法的代码改个类型名就能迁到 go-netx，同时保留自己的所有权模型。sing 的这些方法直接索引池里的数组、不查边界，`WriteRune` 截断非 ASCII，`ReadFrom` 在正好装满时也报错并丢掉计数、遇到 (0, nil) 死循环，所以不能只照搬方法名。`WriteTo` 仍不消费（与 sing 一致），`Read` 是消费路径 |
+| BUF-27 | P1 | 消费型读取：`Read`（`io.Reader`，空时 `io.EOF`，空切片返回 0、nil）、`ReadByte`、`ReadBytes`（返回视图而非副本，容量不超出自身；不足 n 字节时不消费，空返回 `io.EOF`、不足返回 `io.ErrUnexpectedEOF`；负数 panic）只移动起始游标、不搬动数据，消费掉的字节变回头部空间；`io.Copy` 走 `WriteTo`，不消费（与 sing 一致） | ✅ | `buf.ConsumingReads` | D-29 |
+| BUF-28 | P1 | 按位置访问：`Byte`、`SetByte`、`To`、`From`、`Range` 的位置相对起始游标；超出 0..Len 一律 panic（头部空间、空闲空间都够不到）；返回的是视图且容量不超出自身 | ✅ | `buf.IndexedAccess` | D-29 |
+| BUF-29 | P0 | `ReadAtLeastFrom`：跨多次读取凑够 min，来源给得多就多收；min 放不下时不读、返回 `io.ErrShortBuffer`；没读到返回 `io.EOF`，不足 min 返回 `io.ErrUnexpectedEOF` 且保留已读部分；min<=0 只读一次。它和 `ReadFullFrom` 都不信任来源：计数越界返回 `ErrInvalidCount` 且缓冲区不变，来源连续返回 (0, nil) 时返回 `io.ErrNoProgress` 而不是空转 | ✅ | `buf.ReadAtLeastAndFullFrom` | REG-39 |
+| BUF-30 | P1 | `Resize(start, n)` 把数据放到 [start, start+n)，按 `Cap` 检查边界（尊重 `Reserve`），越界、负数、溢出都 panic；`FullReset` 清空并去掉头部空间和预留（`Reset` 则回到取出时的头部空间）；`RawCap` 是取出时的总空间，不受 `Reserve` 影响 | ✅ | `buf.ResizeFullResetRawCap` | D-29 |
+| BUF-31 | P1 | `WriteZero`/`WriteZeroN` 在脏内存上写出零字节；`WriteRune` 写 UTF-8 编码（1–4 字节，非法 rune 写 U+FFFD）；放不下时什么都不写并返回 `io.ErrShortBuffer`，rune 不会被截断；`WriteZeroN` 负数 panic | ✅ | `buf.WriteZeroAndRune` | D-29 |
+| BUF-32 | P0 | `ReadFrom`（`io.ReaderFrom`）：读到 EOF 算成功；正好装满也算成功，只有来源还有多余数据才返回 `io.ErrShortBuffer`（缓冲区已满，计数为已存入的字节数）；来源出错时带回已读字节数；计数越界返回 `ErrInvalidCount`；来源连续返回 (0, nil) 返回 `io.ErrNoProgress`（缓冲区已满时的探测也一样）；有空间时零分配；`io.Copy` 写入 `*Buf` 走这条路径，结果一致 | ✅ | `buf.ReadFrom` | D-29 |
 | REG-37 | buf | 超过 64KB 的非池化 buffer 在 Release 后仍引用底层内存（实测 65537 字节）：调用方若在结构体里留着这个 `*Buf`，整块内存无法回收（外部审查发现） |  | ✅ |
 
 ## 8.5 stream：流式读写
@@ -556,7 +564,7 @@ Review 中发现的问题都要登记在这里，并对应到一个测试 ID。�
 | NF-08 | Fuzz | UDP 的 Reply 和 WriteTo 接收任意参数都不会 panic，只返回文档列出的错误 | ✅ | `udp.FuzzReplyAndWriteTo` | 种子语料随 `go test` 运行；`make fuzz` 对每个目标做长时间 fuzz |
 | NF-09 | Fuzz | Flow 表的随机操作序列与模型一致，epoch 有效，OnClose 恰好一次 | ✅ | `flow.FuzzTableOps` | 种子语料随 `go test` 运行；`make fuzz` 对每个目标做长时间 fuzz |
 | NF-10 | Fuzz | Queue 的随机操作序列与模型一致：FIFO、容量、溢出策略、Stats | ✅ | `queue.FuzzRingOps` | 种子语料随 `go test` 运行；`make fuzz` 对每个目标做长时间 fuzz |
-| NF-11 | Fuzz | Buf 的随机 Get/Release 与游标操作（Write、Extend、ExtendHeader、Advance、Truncate、Reserve/Unreserve、Reset、ReadFullFrom）序列，与切片模型逐步比对；该失败的操作失败且不改变状态；持有的 buffer 不共享内存；全部释放 | ✅ | `buf.FuzzGetRelease` | 种子语料随 `go test` 运行；`make fuzz` 对每个目标做长时间 fuzz |
+| NF-11 | Fuzz | Buf 的随机 Get/Release 与游标操作（Write、Extend、ExtendHeader、Advance、Truncate、Reserve/Unreserve、Reset、ReadFullFrom、Read、ReadBytes、FullReset、WriteZeroN、ReadFrom、Resize）序列，与切片模型逐步比对；该失败的操作失败且不改变状态；持有的 buffer 不共享内存；全部释放 | ✅ | `buf.FuzzGetRelease` | 种子语料随 `go test` 运行；`make fuzz` 对每个目标做长时间 fuzz |
 | NF-12 | Bench | UDP 回显 | ✅ | `udp.BenchmarkEcho` | 约 10µs，0 次分配 |
 | NF-22 | Bench | UDP 接收（队列中有积压时每个数据报的接收开销），按 Batch 1、8、32 对比 | ✅ | `udp.BenchmarkRecv` | 2 vCPU：Batch 1 约 2.2µs，Batch 8 约 1.2µs，0 次分配 |
 | NF-13 | Bench | TCP accept 吞吐 | ✅ | `tcp.BenchmarkAccept` | 实测约 79µs/连接（建立、接受、关闭），23 次分配 |
