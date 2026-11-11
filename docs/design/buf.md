@@ -6,7 +6,7 @@ Overall design: [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
 | Owns | Does not own |
 |---|---|
-| Pooled byte buffers in power-of-two size classes (64B…64KB) | I/O (see `stream`) |
+| Pooled byte buffers in power-of-two size classes (64B…64KB) | I/O (currently `stream`; target `bufio`) |
 | A cursor buffer with headroom for adding and stripping protocol headers | Encoding |
 | The ownership rules every go-netx package follows | Memory limits: the application's (D-24) |
 | Debug-build ownership checks | |
@@ -85,8 +85,9 @@ The rules (borrowed, owned, transfer, shared) are defined for every package
 in [ARCHITECTURE.md](../../ARCHITECTURE.md), "Ownership rules". buf provides
 the types they are about: a `*Buf` from `Get`, `GetHeadroom` or `Copy` is
 owned; `Release` ends ownership; handing a `*Buf` on (`queue.Ring.Push`,
-`stream.Writer.Add`) transfers it, and a failed transfer leaves it with the
-caller. `As` and `With` wrap memory buf does not own; `Release` on them only
+`stream.Writer.Add`, migrating to `bufio.Writer.Add`) transfers it.
+`Add` has no rejection path and no error return; the Writer releases accepted
+owned buffers on `Flush` or `Discard`. `As` and `With` wrap memory buf does not own; `Release` on them only
 drops the reference, so code that releases every `*Buf` it is given works
 for both.
 
@@ -113,7 +114,7 @@ Where go-netx differs:
 - *No reference counting (D-25).* sing's `IncRef`/`DecRef` only count:
   `Release` is skipped while the count is above zero and nothing releases
   when it reaches zero, so a missed call leaks. Shared immutable data uses
-  `stream.Writer.AddShared`; real shared ownership waits for a case that
+  `stream.Writer.AddShared` (target: `bufio.Writer.AddShared`); real shared ownership waits for a case that
   needs it, and would release on the last `Release`.
 - *Default sizes as in sing, without the build tag (D-27).* `BufferSize`
   (32KB) and `UDPBufferSize` (16KB) with `New` and `NewPacket` give code
@@ -186,6 +187,15 @@ on `io.ErrShortBuffer` that byte is gone from the source, as the chunk
 `io.Copy` would have read is. The probe is allocated only on that path:
 reading into a buffer with room allocates nothing (BUF-32).
 
+**Datagram truncation.** `ReadPacketFrom(net.PacketConn)` cannot in general
+detect whether a datagram was larger than the supplied buffer: on some
+platforms `ReadFrom` silently returns the truncated payload, while others
+report an error. Callers must not interpret a successful `ReadPacketFrom`
+as proof of a complete datagram. **V1 follow-up (not implemented):** for
+`*net.UDPConn`, evaluate `ReadMsgUDP` and platform-appropriate `MSG_TRUNC`
+flag handling, with portable fallback behavior explicitly documented and
+tested. Do not claim generic `net.PacketConn` provides truncation flags.
+
 **Counts from outside are checked.** A reader, `PacketConn` or writer that
 reports a count outside 0..len(p) breaks the io contract; `ReadOnceFrom`,
 `ReadPacketFrom` and `WriteTo` return `ErrInvalidCount` and leave the
@@ -206,7 +216,14 @@ previous owner's data, which debug poisoning makes visible.
 releasing twice panics, `Outstanding()` counts unreleased buffers, and
 Release fills the whole block with `Poison` (0xDB), so a read after Release,
 or bytes sent without being written, show up as runs of 0xDB in tests.
-Release builds compile these checks away. Tests and stress runs use both.
+Currently release builds compile these checks away. **V1 hardening target
+(not yet implemented):** add a cheap release-state check to catch an
+immediate second `Release` before returning the same `*Buf` to the pool.
+This is best-effort only: because the `*Buf` object itself is reused, a
+stale owner can call `Release` again after another owner has acquired it
+(the ABA case), and a reused state flag cannot detect that misuse. Do not
+promise complete double-release protection. Ownership remains single-owner,
+exactly one `Release`; benchmark the hot path and test both build modes.
 
 ## 5. Concurrency
 
@@ -250,32 +267,26 @@ operation) in [docs/TESTING.md](../TESTING.md).
 
 None.
 
-## V1 stabilization addendum — bounded pool contract (design target, not implemented)
+## V1 stabilization decision — memory budgets and pool ownership
 
-This section supersedes D-24's blanket exclusion of memory limits **only for an explicitly configured bounded Pool**. The existing unbounded `NewPool` / `Default` fast path and its API remain unchanged. No process RSS or Go heap bound is promised.
+**Decision: retain D-24; bounded pools are deferred, not part of V1.**
+The existing unbounded `Pool`, `Get`, `GetHeadroom`, and `Copy` contracts
+remain authoritative. Do not add `PoolOptions.MaxBytes`, `Acquire`,
+`AcquireHeadroom`, `ErrPoolExhausted`, or a mode-dependent panic on legacy
+`Get` methods as part of the `stream` → `bufio` migration.
 
-### Proposed API and compatibility gate
+Applications needing admission or byte budgets should use the existing
+`limit.Budget` pattern (INT-07): reserve before acquiring a buffer and
+return the budget after releasing it. Budget reservations must account for
+size-class capacity and any temporary overlap during buffer growth where
+the application's chosen accounting contract requires it. This is an
+application-level budget, **not** a guarantee about cached `sync.Pool`
+memory, Go heap usage, or process RSS.
 
-```go
-type PoolOptions struct { MaxBytes int64 } // 0: unlimited; negative: invalid
-func NewPoolWithOptions(PoolOptions) (*Pool, error)
-func (p *Pool) Acquire(size int) (*Buf, error)
-func (p *Pool) AcquireHeadroom(head, size int) (*Buf, error)
-var ErrPoolExhausted error
-```
-
-The signatures above are **design targets**; freeze them against the current callers before implementation. The bounded pool must not expose a successful allocation through `Get`, `GetHeadroom`, or `Copy` that bypasses its budget. Preferred contract: these legacy methods panic with a clear programmer-error message on a bounded pool, and only `Acquire*` is supported; the unbounded pool keeps the original no-error methods. An application that needs bounded copying acquires then copies, releasing on failure. Package-level functions remain unbounded. Do not silently allocate outside the budget or turn exhaustion into a panic inside `Acquire`.
-
-### Accounting and allocation
-
-- `ReservedBytes = InUseBytes + CachedBytes <= MaxBytes` is invariant under concurrency. Count **physical backing allocation capacity** (size-class capacity, not logical `Buf.Cap()`); for requests >64KiB count actual allocated length. The metadata object, allocator overhead, stack, external slices, and GC-retained freed memory are outside this accounting.
-- A free buffer remains reserved while cached. Reuse of a sufficiently large class does not increase reserved bytes; a new allocation atomically reserves its full class capacity *before* allocating. If allocation fails/panics, the reservation must be rolled back where recoverable. A returned buffer carries its pool identity and charged capacity.
-- When the limit cannot fit a new allocation, first evict cached buffers, releasing their reservations, then retry once. If still impossible, return `ErrPoolExhausted` without changing caller ownership. Never block waiting for another owner, borrow from a different pool, or bypass the limit. A request whose physical capacity exceeds the limit fails immediately.
-- Bounded pools use explicitly synchronized free lists, **not** `sync.Pool`, whose GC eviction cannot provide exact accounting. Unlimited pools retain the existing per-class `sync.Pool` implementation. Avoid one global mutex in the unbounded hot path.
-- Release transitions in-use to cached for eligible classes or decrements reserved for uncached >64KiB buffers. A pool may evict cached entries under budget pressure. Never cache unmanaged `As`/`With` memory. Release clears references to large allocations. A single owner calls Release exactly once; double release is misuse and must be detectable in `netxdebug`.
-- `Get(0)`, `Acquire(0)`, headroom-only, negative values, and `head+size` overflow must have explicit tests. Zero-sized acquisitions must not accidentally reserve a class without accounting for it.
-- Pool statistics (if exposed) are **snapshots**, not synchronization barriers; at minimum test internal accounting invariants after concurrent activity. Avoid exposing a new stats API until a concrete consumer needs it.
-
-### Acceptance
-
-Retain existing API tests and benchmark baselines for unlimited mode. Add bounded exhaustion, cache eviction, cross-pool release, >64KiB, budget restoration, race, cancellation-free failure, and `netxdebug` ownership tests. Benchmarks must report ns/op, B/op, allocs/op for both modes and document any regression. No new background goroutine or third-party dependency.
+A future strictly bounded pool requires a concrete use case that cannot
+be met by `limit.Budget`. If approved later, prefer a distinct type such
+as `BoundedPool` rather than a `*Pool` whose `Get` sometimes panics.
+Its Reader integration would need an explicit fallible acquisition and
+constructor contract; never pass such a pool to today's `stream.Reader`
+and assume `Get` can fail gracefully. This is future design discussion,
+not an implemented or frozen API.
